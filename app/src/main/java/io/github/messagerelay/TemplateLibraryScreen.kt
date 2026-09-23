@@ -38,7 +38,11 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 
 @Composable
-internal fun TemplateLibrary(colors: UiColors) {
+internal fun TemplateLibrary(
+    colors: UiColors,
+    editIntent: String = "",
+    onEditIntentConsumed: () -> Unit = {}
+) {
     val context = LocalContext.current
     val dao = remember { RelayDatabase.get(context).relayDao() }
     val scope = rememberCoroutineScope()
@@ -63,6 +67,24 @@ internal fun TemplateLibrary(colors: UiColors) {
             editingId = ""
             status = "原模板已不存在，当前表单内容将保存为新模板"
         }
+    }
+
+    // 外部入口（消息模板列表 / 规则编辑页）点「编辑」带来的模板 id：
+    // 等 Room 首次发射后载入表单，随即消费掉意图，返回该页时不会重复载入。
+    LaunchedEffect(editIntent, templates) {
+        if (editIntent.isEmpty() || templates.isEmpty()) return@LaunchedEffect
+        val target = customTemplates.firstOrNull { it.id == editIntent }
+        if (target != null) {
+            editingId = target.id
+            name = target.name
+            title = target.title
+            body = target.body
+            preview = ""
+            status = "正在编辑「${target.name}」，改完点上方「更新模板」"
+        } else {
+            status = "要编辑的模板不存在，可能已删除"
+        }
+        onEditIntentConsumed()
     }
 
     fun resetForm() {

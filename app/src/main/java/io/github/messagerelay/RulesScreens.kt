@@ -48,7 +48,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 
 @Composable
-internal fun AppRuleSettingsScreen(modifier: Modifier, appName: String, packageName: String, settings: AppSettings, colors: UiColors) {
+internal fun AppRuleSettingsScreen(modifier: Modifier, appName: String, packageName: String, settings: AppSettings, colors: UiColors, onOpenTemplateLibrary: (String?) -> Unit) {
     val context = LocalContext.current
     val dao = remember { RelayDatabase.get(context).relayDao() }
     val scope = rememberCoroutineScope()
@@ -74,7 +74,7 @@ internal fun AppRuleSettingsScreen(modifier: Modifier, appName: String, packageN
         }
         Spacer(Modifier.height(12.dp))
         SectionCard("消息模板", "为这个 App 选择模板；模板内容是全局的，在「设置 → 消息模板 → 自定义模板库」维护。", Icons.Outlined.CheckCircle, colors) {
-            TemplateSelector(templateId, { templateId = it }, colors)
+            TemplateSelector(templateId, { templateId = it }, colors, onAddTemplate = { onOpenTemplateLibrary(null) }, onEditTemplate = { onOpenTemplateLibrary(it) })
         }
         Spacer(Modifier.height(12.dp))
         SectionCard("关键词规则", "包含为空表示不过滤；排除命中即记为已过滤，记录里会写明命中的具体关键词。", Icons.Outlined.List, colors) {
@@ -113,7 +113,7 @@ internal fun AppRuleSettingsScreen(modifier: Modifier, appName: String, packageN
 }
 
 @Composable
-private fun TemplateSelector(selected: String, onSelect: (String) -> Unit, colors: UiColors) {
+private fun TemplateSelector(selected: String, onSelect: (String) -> Unit, colors: UiColors, onAddTemplate: () -> Unit, onEditTemplate: (String) -> Unit) {
     val context = LocalContext.current
     val dao = remember { RelayDatabase.get(context).relayDao() }
     val scope = rememberCoroutineScope()
@@ -136,10 +136,13 @@ private fun TemplateSelector(selected: String, onSelect: (String) -> Unit, color
                         Text("自定义 · 已被 ${rules.count { it.templateId == template.id }} 条规则使用", color = colors.muted, fontSize = 12.sp)
                     }
                     RadioButton(selected == template.id, onClick = { onSelect(template.id) })
+                    TextButton(onClick = { onEditTemplate(template.id) }) { Text("编辑") }
                     TextButton(onClick = { deleting = template }) { Text("删除") }
                 }
             }
         }
+        Spacer(Modifier.height(8.dp))
+        TextButton(onClick = onAddTemplate, modifier = Modifier.fillMaxWidth()) { Text("＋ 添加自定义模板") }
     }
     deleting?.let { template ->
         AlertDialog(
