@@ -65,6 +65,16 @@ object ChannelResultParser {
             }.joinToString("\n")
         }
     }
+
+    // 已过滤记录的过滤原因：这类记录只有 reason 没有 success 字段（addFilteredRecord 的形状）。
+    // 失败记录带 success=false 走 detailText，别混用。
+    fun filterReason(raw: String): String? =
+        parse(raw)
+            ?.firstOrNull { it.success == null && it.reason.isNotBlank() }
+            ?.reason
+            ?.trim()
+            ?.ifBlank { null }
+            ?.let(::redactResultText)
 }
 
 private fun JSONObject.optIntOrNull(name: String): Int? =

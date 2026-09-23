@@ -78,7 +78,9 @@ object WeChatNotificationParser {
             else -> null
         }
         if (isBlankNotificationContent(displayName, info.body)) return null
-        val title = displayName?.let { "微信 · $it" } ?: "微信"
+        // title 只放会话/发送人，应用名由 {{app}} 提供。此前拼过「微信 · 」前缀，监听器又把它
+        // 镜像进 app，导致 {{app}} 和 {{title}} 是同一个字符串、{{app}}：{{title}} 渲染成两段重复文本。
+        val title = displayName ?: "微信"
         val body = info.body?.ifBlank { null } ?: "该通知未提供正文"
         return ExtractedNotificationContent(title, body)
     }

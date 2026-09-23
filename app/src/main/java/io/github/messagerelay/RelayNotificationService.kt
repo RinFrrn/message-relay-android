@@ -48,8 +48,9 @@ class RelayNotificationService : NotificationListenerService() {
         if (content.title.isBlank() && content.body.isBlank()) return
         val app = runCatching { packageManager.getApplicationLabel(packageManager.getApplicationInfo(sbn.packageName, 0)).toString() }.getOrDefault(sbn.packageName)
         if (SmsDuplicateGuard.shouldSuppressNotification(sbn.packageName, content.title, content.body, sbn.postTime)) return
-        val relayApp = if (sbn.packageName == "com.tencent.mm" && content.title.startsWith("微信 · ")) content.title else app
-        scope.launch { RelayEngine.process(applicationContext, RelayMessage(sbn.packageName, relayApp, content.title, content.body, sbn.postTime)) }
+        // app 恒为应用名：微信曾把 title 镜像进 app（得到「微信 · 会话」），
+        // {{app}} 与 {{title}} 就成了同一段文本，模板 {{app}}：{{title}} 会输出两遍。
+        scope.launch { RelayEngine.process(applicationContext, RelayMessage(sbn.packageName, app, content.title, content.body, sbn.postTime)) }
     }
 
     override fun onDestroy() {

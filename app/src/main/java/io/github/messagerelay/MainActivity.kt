@@ -563,8 +563,17 @@ private fun Records(modifier: Modifier, colors: UiColors, onAdjustRules: () -> U
                     border = BorderStroke(1.dp, colors.border)
                 ) {
                     Column(Modifier.padding(14.dp)) {
-                        Text("${record.app} · ${record.status}", color = colors.ink, fontWeight = FontWeight.Bold)
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text(record.app, color = colors.ink, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                            Spacer(Modifier.width(8.dp))
+                            StatusBadge(record.status, recordStatusColor(record.status), colors)
+                        }
                         Text(PrivacyDisplay.title(record.title, privacyMode), color = colors.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (record.status == "已过滤") {
+                            ChannelResultParser.filterReason(record.channelResults)?.let { reason ->
+                                Text("原因：$reason", color = colors.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
                         Text(TimeFormatter.formatRecordListTime(record.createdAt), color = colors.muted, fontSize = 12.sp)
                     }
                 }
@@ -589,6 +598,13 @@ private fun Records(modifier: Modifier, colors: UiColors, onAdjustRules: () -> U
             onAdjustRules = { selected = null; retryNotice = ""; onAdjustRules() }
         )
     }
+}
+
+// 发送状态徽标的颜色：含义由徽标文字承载，颜色只是辅助扫描（成功绿 / 已过滤与部分成功黄 / 其余红）。
+private fun recordStatusColor(status: String): Color = when {
+    status == "成功" -> Success
+    status == "已过滤" || status == "部分成功" -> Warning
+    else -> Danger
 }
 
 @Composable
@@ -1363,12 +1379,30 @@ private fun SourceSelectionCard(
 private fun RecordDetailDialog(record: DeliveryRecord, colors: UiColors, privacyMode: String, retryNotice: String, onDismiss: () -> Unit, onRetry: () -> Unit, onDelete: () -> Unit, onCopy: () -> Unit, onAdjustRules: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("${record.app} · ${record.status}") },
+        title = {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text(record.app, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                Spacer(Modifier.width(8.dp))
+                StatusBadge(record.status, recordStatusColor(record.status), colors)
+            }
+        },
         text = {
             Column {
                 Text("标题：${PrivacyDisplay.title(record.title, privacyMode)}", color = colors.ink)
                 Text("正文：${PrivacyDisplay.body(record.body, privacyMode)}", color = colors.muted, lineHeight = 18.sp)
                 Text("时间：${TimeFormatter.formatRecordDetailTime(record.createdAt)}", color = colors.muted)
+                if (record.status == "已过滤") {
+                    ChannelResultParser.filterReason(record.channelResults)?.let { reason ->
+                        Spacer(Modifier.height(6.dp))
+                        Text("过滤原因：$reason", color = Warning, fontWeight = FontWeight.Bold, lineHeight = 19.sp)
+                    }
+                } else {
+                    val detail = ChannelResultParser.detailText(record.channelResults)
+                    if (detail.isNotBlank()) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(detail, color = colors.muted, fontSize = 13.sp, lineHeight = 18.sp)
+                    }
+                }
                 if (retryNotice.isNotBlank()) Text(retryNotice, color = Success)
             }
         },

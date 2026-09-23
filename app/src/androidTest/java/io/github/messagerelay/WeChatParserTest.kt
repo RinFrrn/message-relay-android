@@ -21,6 +21,8 @@ class WeChatParserTest {
         val info = WeChatNotificationParser.info(notification.extras)
         assertEquals("张三", info.senderName)
         assertEquals(WeChatFieldSource.MESSAGING_PERSON, info.senderSource)
+        // title 只含发送人，不再拼「微信 · 」前缀（前缀曾被镜像进 {{app}} 造成重复）。
+        assertEquals("张三", WeChatNotificationParser.parse(notification.extras)?.title)
     }
 
     @Test fun conversationTitleProvidesGroupNameAndPrefixFallbackProvidesSender() {
@@ -34,6 +36,8 @@ class WeChatParserTest {
         assertEquals("李四", info.senderName)
         assertTrue(info.body.orEmpty().contains("李四：你好"))
         assertEquals(WeChatFieldSource.BODY_PREFIX, info.senderSource)
+        // 群聊 title 取会话名（群名），同样不带「微信 · 」前缀。
+        assertEquals("测试群", WeChatNotificationParser.parse(notification.extras)?.title)
     }
 
     @Test fun emptyNotificationIsTreatedAsBlankAndRejected() {
