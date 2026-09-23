@@ -44,15 +44,25 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Apps
+import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.List
+import androidx.compose.material.icons.outlined.MenuBook
 import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.PlayCircle
+import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.SimCard
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.Update
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -205,6 +215,7 @@ private enum class SubPage {
     QuietHours,
     BackgroundHealth,
     BackupRestore,
+    RecordPrivacy,
     Manual,
     Advanced,
     AdvancedRules,
@@ -314,22 +325,21 @@ fun MessageRelayApp(openPermission: () -> Unit) {
                     stateHolder.SaveableStateProvider(key = page to activeTab) {
                         when (page) {
                             SubPage.PushChannels -> PushChannelScreen(modifier, settings, repository, colors)
-                            SubPage.AppSelection -> SimpleAppSelectionScreen(modifier, settings, repository, colors) { app ->
+                            SubPage.AppSelection -> SimpleAppSelectionScreen(modifier, settings, repository, colors, onOpenRules = { push(SubPage.AdvancedRules) }) { app ->
                                 editingApp = app
                                 push(SubPage.AppRuleSettings)
                             }
-                            SubPage.TemplatePresets -> SimpleTemplatePresetScreen(modifier, settings, repository, colors)
+                            SubPage.TemplatePresets -> SimpleTemplatePresetScreen(modifier, settings, repository, colors, onOpenCustomTemplates = { push(SubPage.AdvancedTemplates) })
                             SubPage.QuietHours -> QuietHoursScreen(modifier, settings, repository, colors)
                             SubPage.BackgroundHealth -> BackgroundHealthScreen(modifier, openPermission, colors)
                             SubPage.BackupRestore -> BackupRestoreScreen(modifier, colors)
+                            SubPage.RecordPrivacy -> RecordPrivacyScreen(modifier, settings, repository, colors)
                             SubPage.Manual -> UserManualScreen(modifier, colors)
                             SubPage.Advanced -> AdvancedSettingsScreen(
                                 modifier = modifier,
                                 settings = settings,
                                 repository = repository,
-                                colors = colors,
-                                onOpenRules = { push(SubPage.AdvancedRules) },
-                                onOpenTemplates = { push(SubPage.AdvancedTemplates) }
+                                colors = colors
                             )
                             SubPage.AdvancedRules -> Rules(modifier, colors) { app ->
                                 editingApp = app
@@ -338,7 +348,7 @@ fun MessageRelayApp(openPermission: () -> Unit) {
                             SubPage.AdvancedTemplates -> PageScaffold("自定义消息模板", "维护全局模板；保存后在各 App 的规则编辑页选用。", modifier, colors, scope = SettingScope.GLOBAL) { TemplateLibrary(colors) }
                             SubPage.SimManagement -> SimManagementScreen(modifier, colors)
                             SubPage.AppRuleSettings -> editingApp?.let { AppRuleSettingsScreen(modifier, it.first, it.second, settings, colors) }
-                                ?: SimpleAppSelectionScreen(modifier, settings, repository, colors) { app ->
+                                ?: SimpleAppSelectionScreen(modifier, settings, repository, colors, onOpenRules = { push(SubPage.AdvancedRules) }) { app ->
                                     editingApp = app
                                     push(SubPage.AppRuleSettings)
                                 }
@@ -372,6 +382,7 @@ fun MessageRelayApp(openPermission: () -> Unit) {
                                     onOpenQuiet = { push(SubPage.QuietHours) },
                                     onOpenBackground = { push(SubPage.BackgroundHealth) },
                                     onOpenBackup = { push(SubPage.BackupRestore) },
+                                    onOpenRecordPrivacy = { push(SubPage.RecordPrivacy) },
                                     onOpenSimManagement = { push(SubPage.SimManagement) },
                                     onOpenAdvanced = { push(SubPage.Advanced) },
                                     onOpenVersionUpdate = { push(SubPage.VersionUpdate) },
@@ -620,6 +631,7 @@ private fun SettingsHub(
     onOpenQuiet: () -> Unit,
     onOpenBackground: () -> Unit,
     onOpenBackup: () -> Unit,
+    onOpenRecordPrivacy: () -> Unit,
     onOpenSimManagement: () -> Unit,
     onOpenAdvanced: () -> Unit,
     onOpenVersionUpdate: () -> Unit,
@@ -628,43 +640,78 @@ private fun SettingsHub(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var showAdvancedDialog by remember { mutableStateOf(false) }
+    val dao = remember { RelayDatabase.get(context).relayDao() }
+    val rules by dao.rulesFlow().collectAsState(initial = emptyList())
+    val templates by dao.templatesFlow().collectAsState(initial = emptyList())
+    // 渠道配置从 SecureStore 读；进入设置页时读一次即可（从渠道页返回会整体重组，值会刷新）。
+    val channels = remember { ChannelSelection.normalized(storedChannels(context)) }
+    val enabledApps = remember(rules) { rules.count { it.enabled } }
+    val customTemplateCount = remember(templates) { TemplateCatalog.customTemplates(templates).size }
+    val defaultTemplateName = remember(templates, settings.selectedTemplatePreset) {
+        TemplateCatalog.allTemplates(templates).firstOrNull { it.id == settings.selectedTemplatePreset }?.name
+            ?: TemplateCatalog.displayName(settings.selectedTemplatePreset)
+    }
+    val primaryChannelName = channels.firstOrNull { it.id == settings.primaryChannelId }?.name ?: channels.firstOrNull()?.name
     PageScaffold("设置", "「全局」对所有 App 生效，「按应用」每个 App 单独一份；常用功能放前面。", modifier, colors) {
-        SettingsGroup("基础设置", colors)
-        SectionCard("外观", "默认跟随系统，也可以固定浅色或深色。", Icons.Outlined.Settings, colors, scope = SettingScope.GLOBAL) {
+        SettingsGroup("转发设置", colors)
+        SettingNavRow("软件选择", "$enabledApps 个 App 启用转发", Icons.Outlined.Apps, onOpenApps, colors, scope = SettingScope.PER_APP)
+        SettingNavRow("消息模板", "默认：$defaultTemplateName · 自定义 $customTemplateCount 个", Icons.Outlined.Description, onOpenTemplates, colors, scope = SettingScope.GLOBAL)
+        SettingNavRow(
+            "免打扰", "跨午夜时段与关键词例外，支持重要关键词例外。", Icons.Outlined.Schedule, onOpenQuiet, colors,
+            scope = SettingScope.GLOBAL,
+            trailing = {
+                StatusBadge(
+                    if (settings.quietEnabled) "${settings.quietStart}-${settings.quietEnd}" else "未开启",
+                    if (settings.quietEnabled) Indigo else colors.muted,
+                    colors
+                )
+            }
+        )
+        SettingNavRow(
+            "记录与隐私",
+            "保留 ${retentionLabel(settings.historyRetention)} · ${privacyLabel(settings.privacyDisplayMode)}",
+            Icons.Outlined.History, onOpenRecordPrivacy, colors, scope = SettingScope.GLOBAL
+        )
+        SettingsGroup("推送与数据", colors)
+        SettingNavRow(
+            "推送渠道",
+            if (channels.isEmpty()) "尚未配置，先添加 Bark、飞书或钉钉。" else "已配置 ${channels.size} 个 · 主渠道 ${primaryChannelName ?: "未选择"}",
+            Icons.Outlined.Notifications, onOpenChannel, colors,
+            scope = SettingScope.GLOBAL,
+            trailing = if (channels.isEmpty()) ({ StatusBadge("未配置", Danger, colors) }) else null
+        )
+        SettingNavRow("备份与恢复", "导出或恢复基础配置。", Icons.Outlined.Save, onOpenBackup, colors, scope = SettingScope.GLOBAL)
+        SettingsGroup("应用", colors)
+        SectionCard("外观", "默认跟随系统，也可以固定浅色或深色。", Icons.Outlined.Palette, colors, scope = SettingScope.GLOBAL) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色").forEach { (mode, label) ->
                     OutlinedButton(onClick = { scope.launch { repository.setThemeMode(mode) } }) { Text(label) }
                 }
             }
         }
-        SettingNavRow("推送渠道", "配置 Bark、飞书、钉钉，并选择主推送渠道。", Icons.Outlined.Notifications, onOpenChannel, colors, scope = SettingScope.GLOBAL)
-        SettingNavRow("软件选择", "选择要转发的 App；每个 App 可单独配置规则。", Icons.Outlined.List, onOpenApps, colors, scope = SettingScope.PER_APP)
-        SettingNavRow("SIM 卡管理", "查看电话相关的 SIM 信息。", Icons.Outlined.Notifications, onOpenSimManagement, colors, scope = SettingScope.GLOBAL)
-        SettingNavRow("消息模板", "全局默认模板，新建 App 规则时使用；单个 App 在规则编辑页单独选择。", Icons.Outlined.CheckCircle, onOpenTemplates, colors, scope = SettingScope.GLOBAL)
-        SettingNavRow("免打扰", if (settings.quietEnabled) "${settings.quietStart}-${settings.quietEnd}" else "未开启", Icons.Outlined.Schedule, onOpenQuiet, colors, scope = SettingScope.GLOBAL)
         SettingNavRow("后台运行", "检查通知访问、通知权限和后台保活。", Icons.Outlined.PlayCircle, onOpenBackground, colors)
-        SettingNavRow("备份与恢复", "导出或恢复基础配置。", Icons.Outlined.CheckCircle, onOpenBackup, colors, scope = SettingScope.GLOBAL)
+        SettingNavRow("SIM 卡管理", "查看电话相关的 SIM 信息。", Icons.Outlined.SimCard, onOpenSimManagement, colors, scope = SettingScope.GLOBAL)
         SettingsGroup("高级设置", colors)
-        SettingNavRow("高级设置区域", "关键词过滤、应用独立规则、自定义模板和多渠道同时发送。", Icons.Outlined.Tune, {
+        SettingNavRow("高级设置区域", "多渠道同时发送、失败重试等全局行为开关。", Icons.Outlined.Tune, {
             if (settings.advancedAcknowledged) onOpenAdvanced() else showAdvancedDialog = true
         }, colors)
         SettingsGroup("帮助与关于", colors)
-        SettingNavRow("使用教程", "第一次使用不知道怎么填？按步骤看这里。", Icons.Outlined.List, onOpenManual, colors)
+        SettingNavRow("使用教程", "第一次使用不知道怎么填？按步骤看这里。", Icons.Outlined.MenuBook, onOpenManual, colors)
         ChangelogSection(colors)
-        SettingNavRow("版本更新", updateSubtitle(settings), Icons.Outlined.CheckCircle, onOpenVersionUpdate, colors)
-        SettingNavRow("GitHub 项目", "源码、README、Release 与问题反馈", Icons.Outlined.CheckCircle, {
+        SettingNavRow("版本更新", updateSubtitle(settings), Icons.Outlined.Update, onOpenVersionUpdate, colors)
+        SettingNavRow("GitHub 项目", "源码、README、Release 与问题反馈", Icons.Outlined.Code, {
             openExternalLink(context, GITHUB_REPOSITORY_URL)
         }, colors)
-        SettingNavRow("问题反馈", "在 GitHub Issues 反馈问题或建议", Icons.Outlined.Tune, {
+        SettingNavRow("问题反馈", "在 GitHub Issues 反馈问题或建议", Icons.Outlined.BugReport, {
             openExternalLink(context, GITHUB_ISSUES_URL)
         }, colors)
-        SettingNavRow("关于消息接力", "版本、开源许可与开发信息", Icons.Outlined.CheckCircle, onOpenAbout, colors)
+        SettingNavRow("关于消息接力", "版本、开源许可与开发信息", Icons.Outlined.Info, onOpenAbout, colors)
     }
     if (showAdvancedDialog) {
         AlertDialog(
             onDismissRequest = { showAdvancedDialog = false },
             title = { Text("进入高级设置？") },
-            text = { Text("这里包含关键词过滤、自定义模板和多渠道发送等功能，错误配置可能影响消息转发。") },
+            text = { Text("这里包含多渠道同时发送和失败自动重试等全局开关，错误配置可能导致消息漏发或重复发送。") },
             confirmButton = {
                 TextButton(onClick = {
                     scope.launch { repository.setAdvancedAcknowledged(true) }
@@ -819,6 +866,7 @@ private fun SimpleAppSelectionScreen(
     settings: AppSettings,
     repository: AppSettingsRepository,
     colors: UiColors,
+    onOpenRules: () -> Unit,
     onOpenAppSettings: (Pair<String, String>) -> Unit
 ) {
     val context = LocalContext.current
@@ -839,6 +887,7 @@ private fun SimpleAppSelectionScreen(
         }
     }
     PageScaffold("软件选择", "推荐短信、电话、微信；其他 App 也可以手动选择。", modifier, colors, scope = SettingScope.PER_APP) {
+        SettingNavRow("批量管理规则", "按列表查看并启用/停用全部 App 规则。", Icons.Outlined.Tune, onOpenRules, colors, scope = SettingScope.PER_APP)
         SectionCard("推荐应用", "能识别到才会显示，避免不同手机包名不一致。", Icons.Outlined.CheckCircle, colors) {
             recommended.forEach { (name, pkg) ->
                 SimpleAppRow(name, pkg, ruleMap[pkg], settings.selectedTemplatePreset, customTemplates, hitMap[pkg] ?: 0, colors, onOpenAppSettings) { rule ->
@@ -848,7 +897,7 @@ private fun SimpleAppSelectionScreen(
             if (recommended.isEmpty()) EmptyText("暂未识别到短信、电话、微信，可在其他应用里搜索。", colors)
         }
         Spacer(Modifier.height(12.dp))
-        SectionCard("其他应用", "简单模式不显示复杂包名说明，需要细节可到高级设置。", Icons.Outlined.List, colors) {
+        SectionCard("其他应用", "搜索选择要转发的应用；关键词、模板等细节在 App 的规则编辑页里改。", Icons.Outlined.List, colors) {
             OutlinedTextField(search, { search = it }, label = { Text("搜索应用") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             if (filteredApps.isEmpty()) EmptyText("没有匹配的应用。", colors)
             else LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp)) {
@@ -863,7 +912,7 @@ private fun SimpleAppSelectionScreen(
 }
 
 @Composable
-private fun SimpleTemplatePresetScreen(modifier: Modifier, settings: AppSettings, repository: AppSettingsRepository, colors: UiColors) {
+private fun SimpleTemplatePresetScreen(modifier: Modifier, settings: AppSettings, repository: AppSettingsRepository, colors: UiColors, onOpenCustomTemplates: () -> Unit) {
     val context = LocalContext.current
     val dao = remember { RelayDatabase.get(context).relayDao() }
     val scope = rememberCoroutineScope()
@@ -897,6 +946,8 @@ private fun SimpleTemplatePresetScreen(modifier: Modifier, settings: AppSettings
             Spacer(Modifier.height(8.dp))
             StatusBadge(batchStatus, Success, colors)
         }
+        Spacer(Modifier.height(6.dp))
+        SettingNavRow("自定义模板库", "新建、编辑和删除模板（17 个变量含电话、短信专用）。", Icons.Outlined.List, onOpenCustomTemplates, colors, scope = SettingScope.GLOBAL)
         if (preview.isNotBlank()) {
             Spacer(Modifier.height(12.dp))
             SectionCard("本地预览", null, Icons.Outlined.CheckCircle, colors) { Text(preview, color = colors.ink, lineHeight = 20.sp) }
@@ -1030,23 +1081,18 @@ private fun BackupRestoreScreen(modifier: Modifier, colors: UiColors) {
     }
 }
 
+private fun privacyLabel(value: String): String = when (value) {
+    "masked" -> "隐藏正文"
+    "hidden" -> "隐藏号码"
+    else -> "完整显示"
+}
+
 @Composable
-private fun AdvancedSettingsScreen(
-    modifier: Modifier,
-    settings: AppSettings,
-    repository: AppSettingsRepository,
-    colors: UiColors,
-    onOpenRules: () -> Unit,
-    onOpenTemplates: () -> Unit
-) {
+private fun RecordPrivacyScreen(modifier: Modifier, settings: AppSettings, repository: AppSettingsRepository, colors: UiColors) {
     val scope = rememberCoroutineScope()
-    var retryCount by rememberSaveable(settings.maxRetryCount) { mutableStateOf(settings.maxRetryCount.toString()) }
-    PageScaffold("高级设置", "适合了解通知过滤、Webhook 和消息模板的用户。", modifier, colors) {
-        SectionCard("风险提示", "错误配置可能导致消息漏发、重复发送或模板显示异常。", Icons.Outlined.Tune, colors) {
-            Text("只修改你明确理解的项目。", color = colors.muted)
-        }
-        SectionCard("记录与隐私", "保留时间影响历史记录清理；隐私模式只影响本机显示，不改动已存内容。", Icons.Outlined.History, colors, scope = SettingScope.GLOBAL) {
-            Text("历史记录保留（当前：${retentionLabel(settings.historyRetention)}）", color = colors.ink, fontWeight = FontWeight.Bold)
+    PageScaffold("记录与隐私", "历史记录保留策略与本机显示方式；隐私模式只影响显示，不改动已存内容。", modifier, colors, scope = SettingScope.GLOBAL) {
+        SectionCard("历史记录保留", "到期的记录会被自动清理；「仅状态」只保留发送状态、不保存正文。", Icons.Outlined.History, colors) {
+            Text("当前：${retentionLabel(settings.historyRetention)}", color = colors.ink, fontWeight = FontWeight.Bold)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 listOf("7" to "7 天", "30" to "30 天", "90" to "90 天", "forever" to "永久", "status_only" to "仅状态").forEach { (value, label) ->
                     OutlinedButton(
@@ -1056,13 +1102,10 @@ private fun AdvancedSettingsScreen(
                     ) { Text(if (settings.historyRetention == value) "✓ $label" else label, fontSize = 11.sp, maxLines = 1) }
                 }
             }
-            Text("隐私显示模式（当前：${
-                when (settings.privacyDisplayMode) {
-                    "masked" -> "隐藏正文"
-                    "hidden" -> "隐藏号码"
-                    else -> "完整显示"
-                }
-            }）", color = colors.ink, fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.height(12.dp))
+        SectionCard("隐私显示模式", "只影响本机显示，不改动已存内容。", Icons.Outlined.Settings, colors) {
+            Text("当前：${privacyLabel(settings.privacyDisplayMode)}", color = colors.ink, fontWeight = FontWeight.Bold)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 listOf("full" to "完整显示", "masked" to "隐藏正文", "hidden" to "隐藏号码").forEach { (value, label) ->
                     OutlinedButton(
@@ -1074,8 +1117,22 @@ private fun AdvancedSettingsScreen(
             }
             Text("「隐藏正文」在记录详情里隐藏正文；「隐藏号码」把 7 位以上数字串保留后 4 位打码，列表和详情都生效。", color = colors.muted, fontSize = 12.sp)
         }
-        SettingNavRow("关键词过滤与应用独立规则", "每个 App 单独配置包含/排除关键词、模板、仅锁屏和电话类型。", Icons.Outlined.Tune, onOpenRules, colors, scope = SettingScope.PER_APP)
-        SettingNavRow("自定义消息模板", "维护全局模板（17 个变量含电话、短信专用），保存后在各 App 的规则里选用。", Icons.Outlined.List, onOpenTemplates, colors, scope = SettingScope.GLOBAL)
+    }
+}
+
+@Composable
+private fun AdvancedSettingsScreen(
+    modifier: Modifier,
+    settings: AppSettings,
+    repository: AppSettingsRepository,
+    colors: UiColors
+) {
+    val scope = rememberCoroutineScope()
+    var retryCount by rememberSaveable(settings.maxRetryCount) { mutableStateOf(settings.maxRetryCount.toString()) }
+    PageScaffold("高级设置", "影响所有推送渠道的全局行为开关；错误配置可能导致消息漏发或重复发送。", modifier, colors) {
+        SectionCard("风险提示", "错误配置可能导致消息漏发、重复发送或模板显示异常。", Icons.Outlined.Tune, colors) {
+            Text("只修改你明确理解的项目。", color = colors.muted)
+        }
         SectionCard("多渠道同时发送", "开启后同一条消息会同时发送到全部启用渠道。", Icons.Outlined.Notifications, colors, scope = SettingScope.GLOBAL) {
             SettingSwitchRow("启用多渠道同时发送", settings.multiChannelSend, { scope.launch { repository.setMultiChannelSend(it) } }, colors)
         }
@@ -1544,7 +1601,7 @@ private fun SetupStep(label: String, done: Boolean, onClick: () -> Unit, colors:
 }
 
 @Composable
-private fun SettingNavRow(title: String, subtitle: String, icon: ImageVector, onClick: () -> Unit, colors: UiColors, scope: SettingScope? = null) {
+private fun SettingNavRow(title: String, subtitle: String, icon: ImageVector, onClick: () -> Unit, colors: UiColors, scope: SettingScope? = null, trailing: (@Composable () -> Unit)? = null) {
     OutlinedCard(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 5.dp),
         colors = CardDefaults.outlinedCardColors(containerColor = colors.card),
@@ -1562,6 +1619,10 @@ private fun SettingNavRow(title: String, subtitle: String, icon: ImageVector, on
                     }
                 }
                 Text(subtitle, color = colors.muted, lineHeight = 18.sp)
+            }
+            if (trailing != null) {
+                Spacer(Modifier.width(8.dp))
+                trailing()
             }
             Text("›", color = Indigo, fontSize = 24.sp)
         }

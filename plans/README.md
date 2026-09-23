@@ -14,6 +14,7 @@
 | app 选择页面卡顿 | F4 主线程逐应用 Binder IPC + F12 非虚拟化 | 003 |
 | 高级设置自定义模板无效 | F2 自定义模板不可引用 + F1 10/12 预设雷同 + F7 `require()` 崩溃 | 004 |
 | （整体体感）点了没反应、设置找不到 | F6 死按钮 + F11–F18 细节 | 006 |
+| 设置页逻辑不直观、功能找不到状态 | P1–P7（静态副标题、图标重复、模板/规则双入口跨层级） | 007 |
 
 ## 执行顺序与依赖
 
@@ -38,6 +39,7 @@
 | 004 | [模板系统重构](004-template-system.md) | F1、F2、F7、F8 | HIGH | 3 文件 ~130 行 + 1 测试 | ✅ implemented（机械验证通过，feel check 待真机） |
 | 005 | [入口整合](005-entry-consolidation.md) | F9、F10 | HIGH | 3 文件 ~220 行 −90 行 | ✅ implemented（编译+单测+lint 通过，feel check 待真机） |
 | 006 | [死动作清理与细节打磨](006-dead-actions-and-polish.md) | F6、F11、F13–F18 | MED | 5 文件 ~150 行 −60 行 | ✅ implemented（编译+单测+lint 通过，feel check 待真机） |
+| 007 | [设置页直观化](007-settings-clarity.md) | 用户直提：设置不直观 | MED | 1 文件 ~200 行 | ✅ implemented（编译+单测+lint 通过，feel check 待真机） |
 
 > **006 落地与原方案的差异/裁决**：
 > - F6a（模板库「发送测试」死按钮）已由 004 删除、F16（Onboarding 返回上一步）已由 002 完成，均无需重复处理。
