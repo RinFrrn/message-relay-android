@@ -10,11 +10,18 @@ data class ExtractedNotificationContent(
     val body: String
 )
 
+// 标题与正文都没有实质内容的通知名为空白通知。必须在填占位文案之前判定，
+// 否则监听器里 "标题与正文都为空则丢弃" 的守卫永远拦不住任何通知。
+internal fun isBlankNotificationContent(title: String?, body: String?): Boolean =
+    title.isNullOrBlank() && body.isNullOrBlank()
+
 object NotificationContentExtractor {
     private const val MAX_BODY_CHARS = 4000
 
-    fun extract(sbn: StatusBarNotification): ExtractedNotificationContent {
-        val extras = sbn.notification.extras ?: Bundle.EMPTY
+    fun extract(sbn: StatusBarNotification): ExtractedNotificationContent? =
+        extract(sbn.notification?.extras ?: Bundle.EMPTY)
+
+    fun extract(extras: Bundle): ExtractedNotificationContent? {
         val title = firstNonBlank(
             extras.safeText(Notification.EXTRA_TITLE),
             extras.safeText(Notification.EXTRA_CONVERSATION_TITLE),
@@ -27,6 +34,7 @@ object NotificationContentExtractor {
             latestTextLine(extras)
         ).let { normalizeBody(it, title) }
 
+        if (isBlankNotificationContent(title, body)) return null
         return ExtractedNotificationContent(
             title = title,
             body = body.ifBlank { "该通知未提供正文" }

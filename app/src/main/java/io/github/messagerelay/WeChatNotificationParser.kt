@@ -62,8 +62,13 @@ object WeChatDiagnostics {
 }
 
 object WeChatNotificationParser {
-    fun parse(sbn: StatusBarNotification): ExtractedNotificationContent {
-        val extras = sbn.notification.extras ?: Bundle.EMPTY
+    fun parse(sbn: StatusBarNotification): ExtractedNotificationContent? =
+        parse(sbn.notification?.extras ?: Bundle.EMPTY)
+
+    // 既没有会话/发送人、也没有正文的通知名为空白通知（应用可能在填充内容前先发一个占位通知，
+    // 或更新时短暂清空字段）。这类通知返回 null 让监听器直接丢弃，否则占位文案
+    // "该通知未提供正文" 会把空值守卫顶掉，同一条微信消息就会多推出一条空白推送。
+    fun parse(extras: Bundle): ExtractedNotificationContent? {
         val info = info(extras)
         val snapshot = snapshot(extras, info)
         WeChatDiagnostics.note(info, snapshot)
@@ -72,6 +77,7 @@ object WeChatNotificationParser {
             info.senderName.isNullOrBlank().not() -> info.senderName
             else -> null
         }
+        if (isBlankNotificationContent(displayName, info.body)) return null
         val title = displayName?.let { "微信 · $it" } ?: "微信"
         val body = info.body?.ifBlank { null } ?: "该通知未提供正文"
         return ExtractedNotificationContent(title, body)

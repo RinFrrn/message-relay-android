@@ -58,4 +58,8 @@ class TemplateRenderTest {
         assertEquals(listOf("simple", "standard", "privacy", "raw", "phone", "sms"), TemplateCatalog.presetIds)
         assertEquals(TemplateCatalog.presetIds, TemplateCatalog.presets().map { it.id })
     }
+
+    @Test fun `variable docs cover exactly the supported variables`() {
+        assertEquals(SUPPORTED_TEMPLATE_VARIABLES, TemplateVariableDocs.allNames)
+    }
 }

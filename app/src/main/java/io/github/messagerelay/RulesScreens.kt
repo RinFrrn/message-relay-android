@@ -66,14 +66,14 @@ internal fun AppRuleSettingsScreen(modifier: Modifier, appName: String, packageN
     var status by remember { mutableStateOf("") }
     val isPhone = TemplateCatalog.recommend(appName, packageName) == "phone" || templateId == "phone"
 
-    PageScaffold(appName, "配置这个 App 的转发、仅息屏、模板和关键词。", modifier, colors) {
+    PageScaffold(appName, "以下设置仅对「$appName」生效；全局默认模板在「设置 → 消息模板」里改。", modifier, colors, scope = SettingScope.PER_APP) {
         SectionCard("转发设置", packageName, Icons.Outlined.Tune, colors) {
             SettingSwitchRow("转发这个 App 的通知", enabled, { enabled = it }, colors)
             SettingSwitchRow("仅息屏时推送", screenOffOnly, { screenOffOnly = it }, colors)
             if (screenOffOnly) StatusBadge("仅息屏时推送已开启", Indigo, colors)
         }
         Spacer(Modifier.height(12.dp))
-        SectionCard("消息模板", "可随时修改模板，不影响渠道配置。", Icons.Outlined.CheckCircle, colors) {
+        SectionCard("消息模板", "为这个 App 选择模板；模板内容是全局的，在「高级设置 → 自定义消息模板」维护。", Icons.Outlined.CheckCircle, colors) {
             TemplateSelector(templateId, { templateId = it }, colors)
         }
         Spacer(Modifier.height(12.dp))
@@ -122,7 +122,7 @@ private fun TemplateSelector(selected: String, onSelect: (String) -> Unit, color
     var deleting by remember { mutableStateOf<TemplateDefinition?>(null) }
     val canonicalSelected = TemplateCatalog.canonical(selected)
     Column {
-        Text("模板可随时修改；自定义模板在「高级设置 → 自定义消息模板」里维护。", color = colors.muted, fontSize = 13.sp)
+        Text("这里的选择只影响这个 App；模板内容是全局的，在「高级设置 → 自定义消息模板」里维护。", color = colors.muted, fontSize = 13.sp)
         TemplateCatalog.allTemplates(templates).forEach { template ->
             if (template.builtIn) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -195,7 +195,7 @@ internal fun Rules(modifier: Modifier, colors: UiColors, onEditRule: (Pair<Strin
             apps.filter { search.isBlank() || it.first.contains(search, true) || it.second.contains(search, true) }
         }
     }
-    PageScaffold("应用独立规则", "关键词、模板、仅锁屏和电话通知类型统一在规则编辑页配置。", modifier, colors) {
+    PageScaffold("应用独立规则", "关键词、模板、仅锁屏和电话通知类型统一在规则编辑页配置。", modifier, colors, scope = SettingScope.PER_APP) {
         SectionCard("新增规则", "选择应用后进入规则编辑页；也可以在「软件选择」里直接开启转发。", Icons.Outlined.Tune, colors) {
             OutlinedTextField(search, { search = it }, label = { Text("搜索应用或包名") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             if (filteredApps.isEmpty()) EmptyText("没有匹配的应用。", colors)

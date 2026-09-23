@@ -35,4 +35,23 @@ class WeChatParserTest {
         assertTrue(info.body.orEmpty().contains("李四：你好"))
         assertEquals(WeChatFieldSource.BODY_PREFIX, info.senderSource)
     }
+
+    @Test fun emptyNotificationIsTreatedAsBlankAndRejected() {
+        val notification = Notification.Builder(androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().targetContext, "test")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .build()
+        org.junit.Assert.assertNull(WeChatNotificationParser.parse(notification.extras))
+        org.junit.Assert.assertNull(NotificationContentExtractor.extract(notification.extras))
+    }
+
+    @Test fun titleOnlyNotificationKeepsPlaceholderBody() {
+        val notification = Notification.Builder(androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().targetContext, "test")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle("系统通知")
+            .build()
+        val content = NotificationContentExtractor.extract(notification.extras)
+        org.junit.Assert.assertNotNull(content)
+        assertEquals("系统通知", content?.title)
+        assertEquals("该通知未提供正文", content?.body)
+    }
 }

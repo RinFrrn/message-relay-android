@@ -39,11 +39,12 @@ class RelayNotificationService : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         if (sbn.packageName == packageName) return
-        val content = if (sbn.packageName == "com.tencent.mm") {
+        // 解析返回 null 表示这是条没有任何可解析内容的空白通知，直接丢弃。
+        val content = (if (sbn.packageName == "com.tencent.mm") {
             WeChatNotificationParser.parse(sbn)
         } else {
             NotificationContentExtractor.extract(sbn)
-        }
+        }) ?: return
         if (content.title.isBlank() && content.body.isBlank()) return
         val app = runCatching { packageManager.getApplicationLabel(packageManager.getApplicationInfo(sbn.packageName, 0)).toString() }.getOrDefault(sbn.packageName)
         if (SmsDuplicateGuard.shouldSuppressNotification(sbn.packageName, content.title, content.body, sbn.postTime)) return
