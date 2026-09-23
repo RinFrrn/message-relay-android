@@ -15,12 +15,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.List
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
@@ -184,76 +186,6 @@ private fun CallTypeSelector(selected: Set<CallEventType>, onChange: (Set<CallEv
 }
 
 @Composable
-internal fun Rules(modifier: Modifier, colors: UiColors, onEditRule: (Pair<String, String>) -> Unit) {
-    val context = LocalContext.current
-    val dao = remember { RelayDatabase.get(context).relayDao() }
-    val scope = rememberCoroutineScope()
-    val rules by dao.rulesFlow().collectAsState(initial = emptyList())
-    val templates by dao.templatesFlow().collectAsState(initial = emptyList())
-    val customTemplates = TemplateCatalog.customTemplates(templates)
-    val apps = rememberInstalledApps()
-    var search by rememberSaveable { mutableStateOf("") }
-    val filteredApps by remember(apps) {
-        derivedStateOf {
-            apps.filter { search.isBlank() || it.first.contains(search, true) || it.second.contains(search, true) }
-        }
-    }
-    PageScaffold("应用独立规则", "关键词、模板、仅锁屏和电话通知类型统一在规则编辑页配置。", modifier, colors, scope = SettingScope.PER_APP) {
-        SectionCard("新增规则", "选择应用后进入规则编辑页；也可以在「软件选择」里直接开启转发。", Icons.Outlined.Tune, colors) {
-            OutlinedTextField(search, { search = it }, label = { Text("搜索应用或包名") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-            if (filteredApps.isEmpty()) EmptyText("没有匹配的应用。", colors)
-            else LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp)) {
-                items(filteredApps, key = { it.second }) { app ->
-                    Row(
-                        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { onEditRule(app.first to app.second) }.padding(vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(app.first, color = colors.ink)
-                            Text(app.second, color = colors.muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                        Text("编辑", color = colors.muted, fontSize = 13.sp)
-                    }
-                }
-            }
-        }
-        Spacer(Modifier.height(12.dp))
-        SectionCard("已有规则", "这里只改启用状态；模板、关键词等请点进规则编辑页。", Icons.Outlined.List, colors) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { scope.launch { dao.saveRules(rules.map { it.copy(enabled = true) }) } }, enabled = rules.any { !it.enabled }) { Text("全部启用") }
-                OutlinedButton(onClick = { scope.launch { dao.saveRules(rules.map { it.copy(enabled = false) }) } }, enabled = rules.any { it.enabled }) { Text("全部停用") }
-            }
-            if (rules.isEmpty()) {
-                Spacer(Modifier.height(8.dp))
-                EmptyText("还没有规则，先在上方选择应用新增。", colors)
-            }
-            rules.forEach { rule ->
-                Spacer(Modifier.height(10.dp))
-                Row(
-                    Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { onEditRule(rule.appName to rule.packageName) }.padding(vertical = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(rule.appName, color = colors.ink, fontWeight = FontWeight.Bold)
-                        Text(templateLabel(rule.templateId, customTemplates), color = colors.muted, fontSize = 12.sp)
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            StatusBadge(if (rule.enabled) "启用" else "停用", if (rule.enabled) Success else colors.muted, colors)
-                            if (rule.screenOffOnly) StatusBadge("仅锁屏", Indigo, colors)
-                        }
-                    }
-                    Switch(rule.enabled, modifier = Modifier.semantics { contentDescription = "${rule.appName}转发开关" }, onCheckedChange = { checked ->
-                        scope.launch { dao.saveRule(rule.copy(enabled = checked)) }
-                    })
-                    TextButton(onClick = { scope.launch { dao.deleteRule(rule.packageName) } }) { Text("删除") }
-                }
-            }
-        }
-    }
-}
-
-@Composable
 internal fun SimpleAppRow(
     appName: String,
     packageName: String,
@@ -263,7 +195,8 @@ internal fun SimpleAppRow(
     hitCount: Int,
     colors: UiColors,
     onOpenSettings: (Pair<String, String>) -> Unit,
-    onRuleChange: (RuleEntity) -> Unit
+    onRuleChange: (RuleEntity) -> Unit,
+    onDelete: ((RuleEntity) -> Unit)? = null
 ) {
     val templateId = TemplateCatalog.recommend(appName, packageName).takeIf { it != TemplateCatalog.GENERAL_ID } ?: templatePreset
     val enabled = rule?.enabled == true
@@ -281,5 +214,11 @@ internal fun SimpleAppRow(
         Switch(enabled, modifier = Modifier.semantics { contentDescription = "${appName}转发开关" }, onCheckedChange = { checked ->
             onRuleChange((rule ?: RuleEntity(packageName, appName, defaultIncludesForTemplate(templateId), templateId = templateId)).copy(enabled = checked))
         })
+        // 删除入口由「批量管理规则」页收敛而来：仅对已有规则显示，确认弹窗在调用方处理。
+        if (onDelete != null && rule != null) {
+            TextButton(onClick = { onDelete(rule) }) { Text("删除") }
+        }
+        // 右箭头指示：点整行进入该 App 的规则编辑页（二级页面），与系统设置的导航暗示一致。
+        Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = "打开${appName}的规则设置", tint = colors.muted)
     }
 }

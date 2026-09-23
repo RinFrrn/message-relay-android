@@ -218,7 +218,6 @@ private enum class SubPage {
     RecordPrivacy,
     Manual,
     Advanced,
-    AdvancedRules,
     AdvancedTemplates,
     SimManagement,
     AppRuleSettings,
@@ -328,7 +327,7 @@ fun MessageRelayApp(openPermission: () -> Unit) {
                     stateHolder.SaveableStateProvider(key = page to activeTab) {
                         when (page) {
                             SubPage.PushChannels -> PushChannelScreen(modifier, settings, repository, colors)
-                            SubPage.AppSelection -> SimpleAppSelectionScreen(modifier, settings, repository, colors, onOpenRules = { push(SubPage.AdvancedRules) }, onOpenCustomTemplates = { templateEditIntent = ""; push(SubPage.AdvancedTemplates) }) { app ->
+                            SubPage.AppSelection -> SimpleAppSelectionScreen(modifier, settings, repository, colors) { app ->
                                 editingApp = app
                                 push(SubPage.AppRuleSettings)
                             }
@@ -344,16 +343,12 @@ fun MessageRelayApp(openPermission: () -> Unit) {
                                 repository = repository,
                                 colors = colors
                             )
-                            SubPage.AdvancedRules -> Rules(modifier, colors) { app ->
-                                editingApp = app
-                                push(SubPage.AppRuleSettings)
-                            }
                             SubPage.AdvancedTemplates -> PageScaffold("自定义消息模板", "维护全局模板；保存后在各 App 的规则编辑页选用。", modifier, colors, scope = SettingScope.GLOBAL) {
                                 TemplateLibrary(colors, editIntent = templateEditIntent, onEditIntentConsumed = { templateEditIntent = "" })
                             }
                             SubPage.SimManagement -> SimManagementScreen(modifier, colors)
                             SubPage.AppRuleSettings -> editingApp?.let { AppRuleSettingsScreen(modifier, it.first, it.second, settings, colors, onOpenTemplateLibrary = { id -> templateEditIntent = id ?: ""; push(SubPage.AdvancedTemplates) }) }
-                                ?: SimpleAppSelectionScreen(modifier, settings, repository, colors, onOpenRules = { push(SubPage.AdvancedRules) }, onOpenCustomTemplates = { templateEditIntent = ""; push(SubPage.AdvancedTemplates) }) { app ->
+                                ?: SimpleAppSelectionScreen(modifier, settings, repository, colors) { app ->
                                     editingApp = app
                                     push(SubPage.AppRuleSettings)
                                 }
@@ -374,7 +369,7 @@ fun MessageRelayApp(openPermission: () -> Unit) {
                                     onOpenBackup = { push(SubPage.BackupRestore) },
                                     onOpenRecords = { tab = MainTab.Records }
                                 )
-                                MainTab.Records -> Records(modifier, colors) { push(SubPage.AdvancedRules) }
+                                MainTab.Records -> Records(modifier, colors) { push(SubPage.AppSelection) }
                                 MainTab.Settings -> SettingsHub(
                                     modifier = modifier,
                                     settings = settings,
@@ -737,37 +732,20 @@ private fun PushChannelScreen(modifier: Modifier, settings: AppSettings, reposit
     val rules by dao.rulesFlow().collectAsState(initial = emptyList())
     // 渠道列表放状态里：保存后直接更新状态驱动重组，不再靠 refreshKey 逼整个页面重算。
     var channels by remember { mutableStateOf(ChannelSelection.normalized(storedChannels(context))) }
-    // 表单默认空白（不预填第一个渠道的值——预填会让人分不清是在编辑它还是新建）；
-    // 编辑是显式状态：列表行点「编辑」载入，editingId 非空即为更新模式。
-    var type by rememberSaveable { mutableStateOf("bark") }
-    var name by rememberSaveable { mutableStateOf("") }
-    var url by rememberSaveable { mutableStateOf("") }
-    var secret by rememberSaveable { mutableStateOf("") }
-    var sound by rememberSaveable { mutableStateOf("") }
-    var icon by rememberSaveable { mutableStateOf("") }
-    var status by remember { mutableStateOf("") }
-    var editingId by rememberSaveable { mutableStateOf("") }
+    // 添加/编辑一律走弹窗：editorOpen 控制显隐，editorTarget 为 null 表示新增。
+    var editorOpen by remember { mutableStateOf(false) }
+    var editorTarget by remember { mutableStateOf<ChannelConfig?>(null) }
     var deleting by remember { mutableStateOf<ChannelConfig?>(null) }
-    val editing = channels.firstOrNull { it.id == editingId }
-    val resetForm: () -> Unit = {
-        editingId = ""
-        type = "bark"
-        name = ""
-        url = ""
-        secret = ""
-        sound = ""
-        icon = ""
-    }
     val secureStore = remember { SecureStore(context) }
     val unreadableChannels = secureStore.hasUnreadableValue("channels")
-    PageScaffold("推送渠道", "简单模式可以保存多个配置，但只选择一个主推送渠道。", modifier, colors, scope = SettingScope.GLOBAL) {
+    PageScaffold("推送渠道", "可以保存多个渠道，从中选择一个作为主推送渠道。", modifier, colors, scope = SettingScope.GLOBAL) {
         if (unreadableChannels) {
             SectionCard("渠道配置读取失败", "系统无法解密已保存的渠道。请重新保存渠道，或导入之前导出的备份。", Icons.Outlined.Tune, colors) {
                 StatusBadge("需要重新保存渠道", Danger, colors)
             }
             Spacer(Modifier.height(12.dp))
         }
-        SectionCard("主推送渠道", "切换主渠道不会删除其他配置。", Icons.Outlined.Notifications, colors) {
+        SectionCard("主推送渠道", "点单选钮切换主渠道；「编辑」「删除」管理对应渠道。", Icons.Outlined.Notifications, colors) {
             channels.forEach { channel ->
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -778,77 +756,19 @@ private fun PushChannelScreen(modifier: Modifier, settings: AppSettings, reposit
                         }
                     }
                     TextButton(onClick = {
-                        editingId = channel.id
-                        type = channel.type
-                        name = channel.name
-                        url = channel.url
-                        secret = channel.secret
-                        sound = channel.sound
-                        icon = channel.icon
-                        status = ""
+                        editorTarget = channel
+                        editorOpen = true
                     }) { Text("编辑") }
                     TextButton(onClick = { deleting = channel }) { Text("删除") }
                     RadioButton(selected = settings.primaryChannelId == channel.id, onClick = { scope.launch { repository.setPrimaryChannelId(channel.id) } })
                 }
             }
-            if (channels.isEmpty()) EmptyText("还没有保存渠道，请先添加一个。", colors)
+            if (channels.isEmpty()) EmptyText("还没有保存渠道，点下方按钮添加一个。", colors)
         }
         Spacer(Modifier.height(12.dp))
-        SectionCard(if (editing == null) "添加渠道" else "编辑渠道「${editing.name}」", "Bark 可填写声音和图标 URL；图标 URL 需要 http/https。", Icons.Outlined.CheckCircle, colors) {
-            ChannelChoice(type, { type = it }, colors)
-            OutlinedTextField(name, { name = it }, label = { Text("渠道名称") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-            OutlinedTextField(url, { url = it }, label = { Text("${channelName(type)} 地址") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-            if (type != "bark") OutlinedTextField(secret, { secret = it }, label = { Text("签名密钥（可选）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-            if (type == "bark") {
-                OutlinedTextField(sound, { sound = it }, label = { Text("Bark 消息声音（可选）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                OutlinedTextField(icon, { icon = it }, label = { Text("Bark 消息图标 URL（可选）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-            }
-            PrimaryAction(if (editing == null) "保存新渠道" else "更新渠道", colors) {
-                val editingTarget = editing
-                val channel = ChannelConfig(
-                    type,
-                    url.trim(),
-                    secret.trim(),
-                    true,
-                    // 更新按 editingId 定位，改 URL 也还是同一个渠道；此前按 type+url 隐式匹配，
-                    // 一改地址就匹配失败、生成新 id 变成重复渠道。
-                    id = editingTarget?.id.orEmpty(),
-                    name = name.ifBlank { channelName(type) },
-                    sound = sound.trim(),
-                    icon = icon.trim(),
-                    boundAppPackages = editingTarget?.boundAppPackages.orEmpty()
-                ).normalized(channels.size)
-                val duplicate = channels.any { it.id != channel.id && it.type == channel.type && it.url == channel.url }
-                when {
-                    url.isBlank() -> status = "请填写渠道地址"
-                    duplicate -> status = "已存在同类型同地址的渠道，请勿重复添加"
-                    !ChannelValidation.isValid(channel) -> status = "渠道地址或图标 URL 无效"
-                    else -> {
-                        val saved = ChannelSelection.normalized(channels.filterNot { it.id == channel.id } + channel)
-                        SecureStore(context).put("channels", ChannelSender.serialize(saved))
-                        channels = saved
-                        // 不再无条件劫持主渠道：仅当当前主渠道不存在（首个渠道 / 主渠道刚被删）时兜底。
-                        if (saved.none { it.id == settings.primaryChannelId }) {
-                            saved.firstOrNull()?.let { scope.launch { repository.setPrimaryChannelId(it.id) } }
-                        }
-                        status = if (editingTarget == null) "已添加渠道「${channel.name}」" else "已更新渠道「${channel.name}」"
-                        resetForm()
-                    }
-                }
-            }
-            if (editing != null) {
-                OutlinedButton(onClick = {
-                    resetForm()
-                    status = "已退出编辑，表单恢复为新增"
-                }, modifier = Modifier.fillMaxWidth()) { Text("取消编辑，恢复新增") }
-            }
-            OutlinedButton(onClick = {
-                scope.launch {
-                    val result = withContext(Dispatchers.IO) { ChannelSender.send(ChannelConfig(type, url, secret, name = name, sound = sound, icon = icon), "消息接力测试", "简单模式渠道测试") }
-                    status = if (result.success) "测试发送成功" else result.error ?: "测试发送失败"
-                }
-            }, modifier = Modifier.fillMaxWidth()) { Text("发送测试消息") }
-            if (status.isNotBlank()) StatusBadge(status, if ("成功" in status || "保存" in status) Success else Danger, colors)
+        PrimaryAction("＋ 添加渠道", colors) {
+            editorTarget = null
+            editorOpen = true
         }
         Spacer(Modifier.height(12.dp))
         channels.filter { it.type == "bark" }.forEach { bark ->
@@ -861,11 +781,32 @@ private fun PushChannelScreen(modifier: Modifier, settings: AppSettings, reposit
                     val saved = channels.map { if (it.id == updated.id) updated else it }
                     SecureStore(context).put("channels", ChannelSender.serialize(saved))
                     channels = saved
-                    status = "${updated.name} 的 App 绑定已保存"
                 }
             )
             Spacer(Modifier.height(10.dp))
         }
+    }
+    if (editorOpen) {
+        ChannelEditorDialog(
+            initial = editorTarget,
+            existing = channels,
+            colors = colors,
+            onDismiss = {
+                editorOpen = false
+                editorTarget = null
+            },
+            onSave = { channel ->
+                val saved = ChannelSelection.normalized(channels.filterNot { it.id == channel.id } + channel)
+                SecureStore(context).put("channels", ChannelSender.serialize(saved))
+                channels = saved
+                // 不无条件劫持主渠道：仅当前主渠道不存在（首个渠道 / 主渠道刚被删）时兜底。
+                if (saved.none { it.id == settings.primaryChannelId }) {
+                    saved.firstOrNull()?.let { scope.launch { repository.setPrimaryChannelId(it.id) } }
+                }
+                editorOpen = false
+                editorTarget = null
+            }
+        )
     }
     deleting?.let { channel ->
         AlertDialog(
@@ -878,16 +819,83 @@ private fun PushChannelScreen(modifier: Modifier, settings: AppSettings, reposit
                     val saved = ChannelSelection.normalized(channels.filterNot { it.id == channel.id })
                     SecureStore(context).put("channels", ChannelSender.serialize(saved))
                     channels = saved
-                    if (editingId == channel.id) resetForm()
                     if (settings.primaryChannelId == channel.id) {
                         saved.firstOrNull()?.let { scope.launch { repository.setPrimaryChannelId(it.id) } }
                     }
-                    status = "已删除渠道「${channel.name}」"
                 }) { Text("删除") }
             },
             dismissButton = { TextButton(onClick = { deleting = null }) { Text("取消") } }
         )
     }
+}
+
+@Composable
+private fun ChannelEditorDialog(
+    initial: ChannelConfig?,
+    existing: List<ChannelConfig>,
+    colors: UiColors,
+    onDismiss: () -> Unit,
+    onSave: (ChannelConfig) -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    // 表单状态以 initial?.id 为 key：换一个编辑对象时整体重置，弹窗关闭即销毁，不污染页面状态。
+    var type by rememberSaveable(initial?.id) { mutableStateOf(initial?.type ?: "bark") }
+    var name by rememberSaveable(initial?.id) { mutableStateOf(initial?.name.orEmpty()) }
+    var url by rememberSaveable(initial?.id) { mutableStateOf(initial?.url.orEmpty()) }
+    var secret by rememberSaveable(initial?.id) { mutableStateOf(initial?.secret.orEmpty()) }
+    var sound by rememberSaveable(initial?.id) { mutableStateOf(initial?.sound.orEmpty()) }
+    var icon by rememberSaveable(initial?.id) { mutableStateOf(initial?.icon.orEmpty()) }
+    var error by remember { mutableStateOf("") }
+    var testStatus by remember { mutableStateOf("") }
+    fun buildChannel() = ChannelConfig(
+        type,
+        url.trim(),
+        secret.trim(),
+        true,
+        // 更新按 initial.id 定位：改地址仍是同一个渠道（保留 App 绑定），不生成重复渠道。
+        id = initial?.id.orEmpty(),
+        name = name.ifBlank { channelName(type) },
+        sound = sound.trim(),
+        icon = icon.trim(),
+        boundAppPackages = initial?.boundAppPackages.orEmpty()
+    ).normalized(existing.size)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (initial == null) "添加渠道" else "编辑渠道") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                ChannelChoice(type, { type = it; error = "" }, colors)
+                OutlinedTextField(name, { name = it }, label = { Text("渠道名称（可选）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                OutlinedTextField(url, { url = it; error = "" }, label = { Text("${channelName(type)} 地址") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                if (type != "bark") OutlinedTextField(secret, { secret = it }, label = { Text("签名密钥（可选）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                if (type == "bark") {
+                    OutlinedTextField(sound, { sound = it }, label = { Text("Bark 消息声音（可选）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                    OutlinedTextField(icon, { icon = it }, label = { Text("Bark 消息图标 URL（可选）") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                }
+                if (error.isNotBlank()) Text(error, color = Danger, fontSize = 13.sp)
+                OutlinedButton(onClick = {
+                    scope.launch {
+                        val result = withContext(Dispatchers.IO) { ChannelSender.send(buildChannel(), "消息接力测试", "渠道测试") }
+                        testStatus = if (result.success) "测试发送成功" else result.error ?: "测试发送失败"
+                    }
+                }, modifier = Modifier.fillMaxWidth()) { Text("发送测试消息") }
+                if (testStatus.isNotBlank()) Text(testStatus, color = if ("成功" in testStatus) Success else Danger, fontSize = 13.sp)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val channel = buildChannel()
+                val duplicate = existing.any { it.id != channel.id && it.type == channel.type && it.url == channel.url }
+                when {
+                    url.isBlank() -> error = "请填写渠道地址"
+                    duplicate -> error = "已存在同类型同地址的渠道"
+                    !ChannelValidation.isValid(channel) -> error = "渠道地址或图标 URL 无效（地址需 https）"
+                    else -> onSave(channel)
+                }
+            }) { Text(if (initial == null) "保存" else "更新") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
 }
 
 @Composable
@@ -933,8 +941,6 @@ private fun SimpleAppSelectionScreen(
     settings: AppSettings,
     repository: AppSettingsRepository,
     colors: UiColors,
-    onOpenRules: () -> Unit,
-    onOpenCustomTemplates: () -> Unit,
     onOpenAppSettings: (Pair<String, String>) -> Unit
 ) {
     val context = LocalContext.current
@@ -946,38 +952,107 @@ private fun SimpleAppSelectionScreen(
     val hitCounts by dao.hitCounts().collectAsState(initial = emptyList())
     val hitMap = remember(hitCounts) { hitCounts.associate { it.packageName to it.count } }
     val installedApps = rememberInstalledApps()
-    val ruleMap = remember(rules) { rules.associateBy { it.packageName } }
-    val recommended = remember(installedApps) { recommendedApps(installedApps) }
+    var showAddApp by remember { mutableStateOf(false) }
+    var deletingRule by remember { mutableStateOf<RuleEntity?>(null) }
+    PageScaffold("软件选择", "管理已配置转发规则的应用；添加新应用点下方「添加应用」。", modifier, colors, scope = SettingScope.PER_APP) {
+        // 列表只显示「已配置应用」（有规则的应用）：此前「推荐应用」按安装与否展示，
+        // 混入了没配置的 App，而真正要管理的对象是规则；添加新应用统一走「添加应用」弹窗。
+        // 删除规则也在行内（带确认弹窗），原「批量管理规则」页因与已配置应用列表完全重复而移除。
+        SectionCard("已配置应用", "点应用行进入规则编辑页调整关键词、模板等细节；开关只控制启用。", Icons.Outlined.CheckCircle, colors) {
+            rules.forEach { rule ->
+                SimpleAppRow(
+                    rule.appName,
+                    rule.packageName,
+                    rule,
+                    settings.selectedTemplatePreset,
+                    customTemplates,
+                    hitMap[rule.packageName] ?: 0,
+                    colors,
+                    onOpenAppSettings,
+                    onRuleChange = { updated -> scope.launch { dao.saveRule(updated) } },
+                    onDelete = { deletingRule = it }
+                )
+            }
+            if (rules.isEmpty()) EmptyText("还没有配置任何应用，点下方「添加应用」开始（微信、短信、电话都能搜到）。", colors)
+        }
+        Spacer(Modifier.height(12.dp))
+        PrimaryAction("＋ 添加应用", colors) { showAddApp = true }
+    }
+    deletingRule?.let { rule ->
+        AlertDialog(
+            onDismissRequest = { deletingRule = null },
+            title = { Text("删除「${rule.appName}」的转发规则？") },
+            text = { Text("关键词、模板等配置会一并删除；历史记录保留。重新添加应用可随时重建规则。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    deletingRule = null
+                    scope.launch { dao.deleteRule(rule.packageName) }
+                }) { Text("删除") }
+            },
+            dismissButton = { TextButton(onClick = { deletingRule = null }) { Text("取消") } }
+        )
+    }
+    if (showAddApp) {
+        AddAppDialog(
+            installedApps = installedApps,
+            configured = remember(rules) { rules.map { it.packageName }.toSet() },
+            colors = colors,
+            onDismiss = { showAddApp = false },
+            onAdd = { (name, pkg) ->
+                // 新增即建一条启用规则：短信/电话/微信按推荐模板走，其余用全局默认模板。
+                val templateId = TemplateCatalog.recommend(name, pkg).takeIf { it != TemplateCatalog.GENERAL_ID } ?: settings.selectedTemplatePreset
+                scope.launch {
+                    dao.saveRule(RuleEntity(pkg, name, defaultIncludesForTemplate(templateId), templateId = templateId).copy(enabled = true))
+                }
+                showAddApp = false
+            }
+        )
+    }
+}
+
+@Composable
+private fun AddAppDialog(
+    installedApps: List<Pair<String, String>>,
+    configured: Set<String>,
+    colors: UiColors,
+    onDismiss: () -> Unit,
+    onAdd: (Pair<String, String>) -> Unit
+) {
     var search by rememberSaveable { mutableStateOf("") }
     val filteredApps by remember(installedApps) {
         derivedStateOf {
             installedApps.filter { search.isBlank() || it.first.contains(search, true) || it.second.contains(search, true) }
         }
     }
-    PageScaffold("软件选择", "推荐短信、电话、微信；其他 App 也可以手动选择。", modifier, colors, scope = SettingScope.PER_APP) {
-        SettingNavRow("批量管理规则", "按列表查看并启用/停用全部 App 规则。", Icons.Outlined.Tune, onOpenRules, colors, scope = SettingScope.PER_APP)
-        SettingNavRow("自定义模板库", "在此添加新模板，或编辑已保存模板的名称、标题与正文。", Icons.Outlined.Description, onOpenCustomTemplates, colors, scope = SettingScope.GLOBAL)
-        SectionCard("推荐应用", "能识别到才会显示，避免不同手机包名不一致。", Icons.Outlined.CheckCircle, colors) {
-            recommended.forEach { (name, pkg) ->
-                SimpleAppRow(name, pkg, ruleMap[pkg], settings.selectedTemplatePreset, customTemplates, hitMap[pkg] ?: 0, colors, onOpenAppSettings) { rule ->
-                    scope.launch { dao.saveRule(rule) }
-                }
-            }
-            if (recommended.isEmpty()) EmptyText("暂未识别到短信、电话、微信，可在其他应用里搜索。", colors)
-        }
-        Spacer(Modifier.height(12.dp))
-        SectionCard("其他应用", "搜索选择要转发的应用；关键词、模板等细节在 App 的规则编辑页里改。", Icons.Outlined.List, colors) {
-            OutlinedTextField(search, { search = it }, label = { Text("搜索应用") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-            if (filteredApps.isEmpty()) EmptyText("没有匹配的应用。", colors)
-            else LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp)) {
-                items(filteredApps, key = { it.second }) { (name, pkg) ->
-                    SimpleAppRow(name, pkg, ruleMap[pkg], settings.selectedTemplatePreset, customTemplates, hitMap[pkg] ?: 0, colors, onOpenAppSettings) { rule ->
-                        scope.launch { dao.saveRule(rule) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("添加应用") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("点应用即添加并启用转发；短信、电话、微信会自动配上对应模板。", color = colors.muted, fontSize = 13.sp)
+                OutlinedTextField(search, { search = it }, label = { Text("搜索应用") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                if (filteredApps.isEmpty()) EmptyText("没有匹配的应用；若列表为空，请在系统设置里授予「设备应用列表」权限。", colors)
+                else LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp)) {
+                    items(filteredApps, key = { it.second }) { (name, pkg) ->
+                        val isConfigured = pkg in configured
+                        Row(
+                            Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(enabled = !isConfigured) { onAdd(name to pkg) }.padding(vertical = 6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(name, color = colors.ink, fontWeight = FontWeight.Bold)
+                                Text(pkg, color = colors.muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                            if (isConfigured) StatusBadge("已配置", Indigo, colors)
+                        }
                     }
                 }
             }
-        }
-    }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("关闭") } }
+    )
 }
 
 @Composable
