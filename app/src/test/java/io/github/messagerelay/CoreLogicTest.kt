@@ -17,6 +17,16 @@ class CoreLogicTest {
         assertFalse(rule.matches(message.copy(body = "广告验证码")))
     }
 
+    @Test fun `filter reason names the matched exclude keyword and missing include`() {
+        val rule = RelayRule(setOf("com.sms"), listOf("验证"), listOf("广告"))
+        assertNull(rule.filterReason(message))
+        assertEquals("命中排除关键词「广告」", rule.filterReason(message.copy(body = "广告验证码")))
+        // 排除与包含同时不满足时优先报排除（用户主动设置的敏感词更需要知道）
+        assertEquals("命中排除关键词「广告」", rule.filterReason(message.copy(title = "天气预报", body = "广告")))
+        assertEquals("未命中包含关键词（需要包含：验证）", rule.filterReason(message.copy(title = "天气", body = "晴")))
+        assertEquals("未启用该应用的转发", rule.filterReason(message.copy(packageName = "com.other")))
+    }
+
     @Test fun `quiet hours can cross midnight and urgent keyword bypasses`() {
         val quiet = QuietHours(true, LocalTime.of(22, 0), LocalTime.of(7, 0), listOf("验证码", "来电", "未接来电"))
         val normal = message.copy(title = "普通通知", body = "明天开会")

@@ -1116,6 +1116,7 @@ private fun RecordPrivacyScreen(modifier: Modifier, settings: AppSettings, repos
                 }
             }
             Text("「隐藏正文」在记录详情里隐藏正文；「隐藏号码」把 7 位以上数字串保留后 4 位打码，列表和详情都生效。", color = colors.muted, fontSize = 12.sp)
+            Text("这里只管本机记录怎么显示；推送出去的消息内容由该 App 选用的模板决定——选「隐私模板」时正文会渲染成「内容已隐藏」，换标准/简洁模板即可显示原文。", color = colors.muted, fontSize = 12.sp)
         }
     }
 }
@@ -1287,80 +1288,6 @@ private fun AboutMessageRelayScreen(modifier: Modifier, colors: UiColors) {
                 Text("GitHub 开源项目")
             }
         }
-    }
-}
-
-@Composable
-private fun TemplateLibrary(colors: UiColors) {
-    val context = LocalContext.current
-    val dao = remember { RelayDatabase.get(context).relayDao() }
-    val scope = rememberCoroutineScope()
-    val templates by dao.templatesFlow().collectAsState(initial = emptyList())
-    val rules by dao.rulesFlow().collectAsState(initial = emptyList())
-    var name by rememberSaveable { mutableStateOf("自定义模板") }
-    var title by rememberSaveable { mutableStateOf("{{app}}：{{title}}") }
-    var body by rememberSaveable { mutableStateOf("{{body}}\n{{time}}") }
-    var preview by remember { mutableStateOf("") }
-    var status by remember { mutableStateOf("") }
-    var deleting by remember { mutableStateOf<TemplateEntity?>(null) }
-    val customTemplates = TemplateCatalog.customTemplates(templates)
-    SectionCard("模板库", "模板决定转发消息在 Bark、飞书、钉钉里显示成什么样。", Icons.Outlined.List, colors) {
-        TemplateVariableReference(colors)
-        Spacer(Modifier.height(10.dp))
-        OutlinedTextField(name, { name = it }, label = { Text("模板名称") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-        OutlinedTextField(title, { title = it }, label = { Text("标题样式") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(body, { body = it }, label = { Text("正文样式") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
-        OutlinedButton(onClick = {
-            val template = MessageTemplate(title, body)
-            preview = template.renderTitle(previewMessage()) + "\n" + template.renderBody(previewMessage())
-            val bad = template.unsupportedVariables()
-            status = if (bad.isEmpty()) "本地预览已生成" else "预览中不支持的变量已原样保留：${bad.joinToString("、")}"
-        }, modifier = Modifier.fillMaxWidth()) { Text("本地预览") }
-        PrimaryAction("保存模板", colors) {
-            val bad = MessageTemplate(title, body).unsupportedVariables()
-            if (bad.isNotEmpty()) {
-                status = "存在不支持的变量：${bad.joinToString("、")}，请修正后再保存"
-            } else {
-                scope.launch {
-                    dao.saveTemplate(TemplateEntity("custom_${System.currentTimeMillis()}", name.ifBlank { "自定义模板" }, title, body))
-                    status = "模板已保存，可在 App 规则里选择"
-                }
-            }
-        }
-        if (preview.isNotBlank()) Text(preview, color = colors.ink, lineHeight = 19.sp)
-        if (status.isNotBlank()) StatusBadge(status, if ("已" in status && "不支持" !in status) Success else Warning, colors)
-    }
-    Spacer(Modifier.height(12.dp))
-    SectionCard("已保存的自定义模板", "删除前会把正在使用它的规则自动回到通用模板。", Icons.Outlined.CheckCircle, colors) {
-        if (customTemplates.isEmpty()) EmptyText("还没有自定义模板。", colors)
-        customTemplates.forEach { template ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(template.name, color = colors.ink, fontWeight = FontWeight.Bold)
-                    Text("已被 ${rules.count { it.templateId == template.id }} 条规则使用", color = colors.muted, fontSize = 12.sp)
-                }
-                TextButton(onClick = { deleting = template }) { Text("删除") }
-            }
-        }
-    }
-    deleting?.let { template ->
-        AlertDialog(
-            onDismissRequest = { deleting = null },
-            title = { Text("删除模板「${template.name}」？") },
-            text = { Text("正在使用它的规则会自动回到通用模板，规则不会丢失。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    val target = template.id
-                    deleting = null
-                    scope.launch {
-                        dao.fallbackTemplate(target)
-                        dao.deleteCustomTemplate(target)
-                        status = "已删除模板"
-                    }
-                }) { Text("删除") }
-            },
-            dismissButton = { TextButton(onClick = { deleting = null }) { Text("取消") } }
-        )
     }
 }
 
@@ -1782,7 +1709,7 @@ internal fun defaultIncludesForTemplate(id: String): String = when (id) {
     else -> ""
 }
 
-private fun previewMessage() = RelayMessage("com.tencent.mm", "微信", "张三", "明天 10 点开会", System.currentTimeMillis())
+internal fun previewMessage() = RelayMessage("com.tencent.mm", "微信", "张三", "明天 10 点开会", System.currentTimeMillis())
 
 private fun channelName(type: String): String = when (type) {
     "dingtalk" -> "钉钉"

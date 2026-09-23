@@ -73,11 +73,11 @@ internal fun AppRuleSettingsScreen(modifier: Modifier, appName: String, packageN
             if (screenOffOnly) StatusBadge("仅息屏时推送已开启", Indigo, colors)
         }
         Spacer(Modifier.height(12.dp))
-        SectionCard("消息模板", "为这个 App 选择模板；模板内容是全局的，在「高级设置 → 自定义消息模板」维护。", Icons.Outlined.CheckCircle, colors) {
+        SectionCard("消息模板", "为这个 App 选择模板；模板内容是全局的，在「设置 → 消息模板 → 自定义模板库」维护。", Icons.Outlined.CheckCircle, colors) {
             TemplateSelector(templateId, { templateId = it }, colors)
         }
         Spacer(Modifier.height(12.dp))
-        SectionCard("关键词规则", "包含关键词为空表示不过滤；排除关键词命中时会记为已过滤。", Icons.Outlined.List, colors) {
+        SectionCard("关键词规则", "包含为空表示不过滤；排除命中即记为已过滤，记录里会写明命中的具体关键词。", Icons.Outlined.List, colors) {
             OutlinedTextField(includes, { includes = it }, label = { Text("包含关键词，每行一个") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
             OutlinedTextField(excludes, { excludes = it }, label = { Text("排除关键词，每行一个") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
         }
@@ -122,7 +122,7 @@ private fun TemplateSelector(selected: String, onSelect: (String) -> Unit, color
     var deleting by remember { mutableStateOf<TemplateDefinition?>(null) }
     val canonicalSelected = TemplateCatalog.canonical(selected)
     Column {
-        Text("这里的选择只影响这个 App；模板内容是全局的，在「高级设置 → 自定义消息模板」里维护。", color = colors.muted, fontSize = 13.sp)
+        Text("这里的选择只影响这个 App；模板内容是全局的，在「设置 → 消息模板 → 自定义模板库」里维护。", color = colors.muted, fontSize = 13.sp)
         TemplateCatalog.allTemplates(templates).forEach { template ->
             if (template.builtIn) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {

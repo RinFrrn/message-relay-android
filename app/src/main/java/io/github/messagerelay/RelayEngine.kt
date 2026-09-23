@@ -20,8 +20,9 @@ object RelayEngine {
         val dao = RelayDatabase.get(context).relayDao()
         val rule = dao.rule(message.packageName) ?: return
         val relayRule = RelayRule(setOf(rule.packageName), rule.includes.lines().filter(String::isNotBlank), rule.excludes.lines().filter(String::isNotBlank))
-        if (!relayRule.matches(message)) {
-            addFilteredRecord(context, dao, message, "规则未命中或命中排除关键词")
+        val missReason = relayRule.filterReason(message)
+        if (missReason != null) {
+            addFilteredRecord(context, dao, message, missReason)
             return
         }
         if (!dedupe.accept(message, System.currentTimeMillis())) return
@@ -78,8 +79,9 @@ object RelayEngine {
         } ?: return
         val message = RelayMessage(rule.packageName, rule.appName, decision.title, decision.body, System.currentTimeMillis())
         val relayRule = RelayRule(setOf(rule.packageName), rule.includes.lines().filter(String::isNotBlank), rule.excludes.lines().filter(String::isNotBlank))
-        if (!relayRule.matches(message)) {
-            addFilteredRecord(context, dao, message, "规则未命中或命中排除关键词")
+        val missReason = relayRule.filterReason(message)
+        if (missReason != null) {
+            addFilteredRecord(context, dao, message, missReason)
             return
         }
         val settings = AppSettingsRepository(context).current()

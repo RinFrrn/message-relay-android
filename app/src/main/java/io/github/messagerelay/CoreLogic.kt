@@ -5,11 +5,18 @@ import java.time.LocalTime
 data class RelayMessage(val packageName: String, val app: String, val title: String, val body: String, val time: Long)
 
 data class RelayRule(val allowedPackages: Set<String> = emptySet(), val include: List<String> = emptyList(), val exclude: List<String> = emptyList()) {
-    fun matches(message: RelayMessage): Boolean {
+    fun matches(message: RelayMessage): Boolean = filterReason(message) == null
+
+    // 具体过滤原因：null = 通过。记录页展示命中的是哪个排除关键词（敏感词）或差在哪条包含词，
+    // 而不是笼统的「规则未命中或命中排除关键词」。排除优先报告——它才是用户主动设的敏感词。
+    fun filterReason(message: RelayMessage): String? {
+        if (message.packageName !in allowedPackages) return "未启用该应用的转发"
         val content = "${message.title}\n${message.body}"
-        return message.packageName in allowedPackages &&
-            (include.isEmpty() || include.any(content::contains)) &&
-            exclude.none(content::contains)
+        exclude.firstOrNull(content::contains)?.let { return "命中排除关键词「$it」" }
+        if (include.isNotEmpty() && include.none(content::contains)) {
+            return "未命中包含关键词（需要包含：${include.joinToString("、")}）"
+        }
+        return null
     }
 }
 
