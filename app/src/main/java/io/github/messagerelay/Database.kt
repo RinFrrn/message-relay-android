@@ -7,6 +7,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity data class DeliveryRecord(@PrimaryKey(autoGenerate = true) val id: Long = 0, val packageName: String = "", val app: String, val title: String, val body: String = "", val status: String, val channelResults: String = "[]", val createdAt: Long, val delayed: Boolean = false)
+
+// 非 Entity：只用于统计每个来源 App 在留存记录中的转发条数。
+data class PackageHitCount(val packageName: String, val count: Int)
 @Entity data class QueuedMessage(@PrimaryKey(autoGenerate = true) val id: Long = 0, val packageName: String, val app: String, val title: String, val body: String, val createdAt: Long, val scheduledAt: Long = createdAt)
 @Entity data class RuleEntity(
     @PrimaryKey val packageName: String,
@@ -31,8 +34,10 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao interface RelayDao {
     @Query("SELECT * FROM DeliveryRecord ORDER BY createdAt DESC LIMIT 100") fun records(): Flow<List<DeliveryRecord>>
+    @Query("SELECT * FROM DeliveryRecord ORDER BY createdAt DESC LIMIT :limit") fun recentRecords(limit: Int): Flow<List<DeliveryRecord>>
     @Query("SELECT * FROM DeliveryRecord WHERE id = :id LIMIT 1") suspend fun record(id: Long): DeliveryRecord?
     @Query("SELECT COUNT(*) FROM DeliveryRecord WHERE createdAt >= :since") fun recordCountSince(since: Long): Flow<Int>
+    @Query("SELECT packageName, COUNT(*) AS count FROM DeliveryRecord GROUP BY packageName") fun hitCounts(): Flow<List<PackageHitCount>>
     @Insert suspend fun addRecord(record: DeliveryRecord)
     @Query("DELETE FROM DeliveryRecord WHERE id NOT IN (SELECT id FROM DeliveryRecord ORDER BY createdAt DESC LIMIT 100)") suspend fun trimRecords()
     @Query("DELETE FROM DeliveryRecord WHERE createdAt < :cutoff") suspend fun deleteRecordsOlderThan(cutoff: Long)

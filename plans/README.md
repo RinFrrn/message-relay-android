@@ -2,7 +2,7 @@
 
 来源：`improve-animations` skill 全量审计（2026-09-23）。
 审计底稿见 `000-ux-motion-audit.md`（18 项发现 F1–F18 + 用户反馈↔发现映射）。
-本目录只写方案，**未改动任何源码**。
+本目录为整改方案；全部 6 个计划已实施完毕（004 → 003 → 002 → 001 → 005 → 006，编译与单测通过，真机 feel check 待验）。
 
 ## 用户反馈 → 计划对照
 
@@ -32,12 +32,31 @@
 | # | 计划 | 覆盖发现 | 严重度 | 规模 | 状态 |
 | --- | --- | --- | --- | --- | --- |
 | 000 | [UX/动效/逻辑审计底稿](000-ux-motion-audit.md) | F1–F18 | — | 审计 | ✅ 完成 |
-| 001 | [导航栈与转场动画](001-navigation-stack-and-transitions.md) | F3 | HIGH | 2 文件 ~120 行 | 📋 planned |
-| 002 | [状态恢复（pop/旋转不丢）](002-state-restoration.md) | F5 | HIGH | 2 文件 + 4 Saver ~160 行 | 📋 planned |
-| 003 | [App 选择页性能](003-app-selection-performance.md) | F4、F12 | HIGH | 3 文件 + 1 新文件 ~200 行 | 📋 planned |
-| 004 | [模板系统重构](004-template-system.md) | F1、F2、F7、F8 | HIGH | 3 文件 ~130 行 + 1 测试 | 📋 planned |
-| 005 | [入口整合](005-entry-consolidation.md) | F9、F10 | HIGH | 3 文件 ~220 行 −90 行 | 📋 planned |
-| 006 | [死动作清理与打磨](006-dead-actions-and-polish.md) | F6、F11、F13–F18 | MED | 5 文件 ~150 行 −60 行 | 📋 planned |
+| 001 | [导航栈与转场动画](001-navigation-stack-and-transitions.md) | F3 | HIGH | 2 文件 ~120 行 | ✅ implemented（编译+单测+lint 通过，feel check 待真机） |
+| 002 | [状态恢复（pop/旋转不丢）](002-state-restoration.md) | F5 | HIGH | 2 文件 + 4 Saver ~160 行 | ✅ implemented（机械验证通过，feel check 待真机） |
+| 003 | [App 选择页性能](003-app-selection-performance.md) | F4、F12 | HIGH | 3 文件 + 1 新文件 ~200 行 | ✅ implemented（机械验证通过，feel check 待真机） |
+| 004 | [模板系统重构](004-template-system.md) | F1、F2、F7、F8 | HIGH | 3 文件 ~130 行 + 1 测试 | ✅ implemented（机械验证通过，feel check 待真机） |
+| 005 | [入口整合](005-entry-consolidation.md) | F9、F10 | HIGH | 3 文件 ~220 行 −90 行 | ✅ implemented（编译+单测+lint 通过，feel check 待真机） |
+| 006 | [死动作清理与细节打磨](006-dead-actions-and-polish.md) | F6、F11、F13–F18 | MED | 5 文件 ~150 行 −60 行 | ✅ implemented（编译+单测+lint 通过，feel check 待真机） |
+
+> **006 落地与原方案的差异/裁决**：
+> - F6a（模板库「发送测试」死按钮）已由 004 删除、F16（Onboarding 返回上一步）已由 002 完成，均无需重复处理。
+> - F6b 选择「补真」：`RelayEngine.enqueue` 复用既有 `RelayWorker` 发送路径（模板沿用规则当前模板），弹窗保持打开并提示「已重新发送」。
+> - F6c「一键诊断」没有真实诊断链路，按计划「补不了的删」删除（复制按钮本就存在且有效）。
+> - F6d `LinkRow` 增加 url 参数；两个参考链接指向飞书官方自定义机器人文档与 Bark 官网（原代码只有文案没有 URL）。
+> - F11 现状：三处解密分属不同 composable（Home 曾每次重组解一次；PushChannelScreen 已 remember；reconcileUpgradeState 本就一次），改为各处单次读取，不引入跨页面缓存。
+> - F13 只做计划限定的基线（48dp 触摸目标 / 开关中文语义 / 状态非纯色），未做完整无障碍审计。
+> - F14 隐私三档语义：`full` 完整显示、`masked` 详情隐藏正文、`hidden` 7 位以上数字串保留后 4 位（列表+详情）；打码后的原值不写日志。
+> - F15 可实测项 = 通知监听 / 通知权限 / 电池优化白名单 / 最近一次转发；厂商自启锁后台一律「检测受限」灰，不写结论。
+> - F18 色板合并实现为 `darkColorScheme` 直接引用 `DarkUi` 字段（色值零变化）。
+
+> **005 落地与原方案的差异**（原方案基于 `4ef8947`，实际落地时 004/003/002/001 已先行完成）：
+> - 规则 UI 三个 composable（`AppRuleSettingsScreen` / `Rules` / `SimpleAppRow`）连同 `TemplateSelector`、`CallTypeSelector` 全部迁入新文件 `RulesScreens.kt`（原方案只点名搬 `AppRuleSettingsScreen`）。
+> - 导航仍走 `editingApp` Pair + `push(SubPage.AppRuleSettings)`，未改成带参 `SubPage` 枚举（不动 001 的导航栈接线）。
+> - `Rules` 页的「新增规则」保留应用搜索列表，但点击改为进编辑页（原内联字段编辑全部删除）；批量启停为「全部启用 / 全部停用」。
+> - `SimpleAppRow` 副标题为「当前模板名 · 近期命中 N 次」（记录受保留策略裁剪，故用「近期」而非「已命中」）。
+> - `TemplateLibrary` 的自定义模板列表只列自定义（管理面语义不变）；「可选集合」统一由 `TemplateCatalog.allTemplates()` 提供。
+> - `SimpleTemplatePresetScreen` 保留，它就是「全局默认模板」选择行（DataStore 配置，不是模板管理入口）。
 
 ## 跨计划共用的动效参数（源自 AUDIT.md）
 

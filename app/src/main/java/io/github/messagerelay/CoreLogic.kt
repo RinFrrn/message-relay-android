@@ -29,33 +29,60 @@ object RecordRetentionPolicy {
     fun shouldKeepBody(retention: String): Boolean = retention != "status_only"
 }
 
+data class RenderedMessage(val text: String, val unsupportedVariables: List<String>)
+
+// 模板变量全集（17 个），与 MessageTemplate.templateData 的键保持一致，由 TemplateRenderTest 校验。
+val SUPPORTED_TEMPLATE_VARIABLES: Set<String> = setOf(
+    "app", "title", "body", "time",
+    "appName", "notificationTitle", "notificationBody", "packageName",
+    "smsBody", "contactName", "fromLabel", "phoneNumber", "smsNumber",
+    "phoneLocation", "simDisplayName", "receivedLocalTime", "callEventLabel"
+)
+
+private val VARIABLE_REGEX = "\\{\\{(\\w+)\\}\\}".toRegex()
+
 data class MessageTemplate(
     val title: String = "{{appName}}",
     val body: String = "📝：内容：{{notificationBody}}\n\n🕒：接收时间：{{receivedLocalTime}}"
 ) {
-    fun renderTitle(message: RelayMessage) = render(title, message)
-    fun renderBody(message: RelayMessage) = render(body, message)
+    fun renderTitle(message: RelayMessage) = renderDetailed(title, message).text
+    fun renderBody(message: RelayMessage) = renderDetailed(body, message).text
 
-    private fun render(value: String, message: RelayMessage): String {
+    // 标题 + 正文里用到的、当前不支持的变量名（去重，按出现顺序）。
+    fun unsupportedVariables(): List<String> =
+        (VARIABLE_REGEX.findAll(title) + VARIABLE_REGEX.findAll(body))
+            .map { it.groupValues[1] }
+            .filterNot { it in SUPPORTED_TEMPLATE_VARIABLES }
+            .distinct()
+            .toList()
+
+    // 渲染单个模板片段。未知变量原样保留并收集告警，绝不抛异常（旧版 require 会导致转发链路崩溃）。
+    fun renderDetailed(value: String, message: RelayMessage): RenderedMessage {
+        val unsupported = mutableListOf<String>()
         val data = templateData(message)
-        val rendered = "\\{\\{(\\w+)\\}\\}".toRegex().replace(value) {
+        val rendered = VARIABLE_REGEX.replace(value) {
             val key = it.groupValues[1]
-            require(key in data) { "不支持的模板变量：$key" }
-            data[key].orEmpty()
-        }
-        return rendered.lines()
-            .map { it.trimEnd() }
-            .filterNot { line ->
-                val text = line.trim()
-                text.equals("null", ignoreCase = true) ||
-                    text.contains("：null", ignoreCase = true) ||
-                    text.contains(":null", ignoreCase = true) ||
-                    text.endsWith("：") ||
-                    text.endsWith(":")
+            if (key in data) data[key].orEmpty()
+            else {
+                unsupported += key
+                it.value
             }
-            .joinToString("\n")
-            .trim()
+        }
+        return RenderedMessage(cleanRendered(rendered), unsupported.distinct())
     }
+
+    private fun cleanRendered(rendered: String): String = rendered.lines()
+        .map { it.trimEnd() }
+        .filterNot { line ->
+            val text = line.trim()
+            text.equals("null", ignoreCase = true) ||
+                text.contains("：null", ignoreCase = true) ||
+                text.contains(":null", ignoreCase = true) ||
+                text.endsWith("：") ||
+                text.endsWith(":")
+        }
+        .joinToString("\n")
+        .trim()
 
     private fun templateData(message: RelayMessage): Map<String, String> {
         val fields = parseStructuredBody(message.body)
@@ -82,6 +109,7 @@ data class MessageTemplate(
             "body" to message.body,
             "time" to localTime,
             "appName" to cleanText(message.app).ifBlank { "未知应用" },
+            "packageName" to message.packageName,
             "notificationTitle" to cleanText(message.title),
             "notificationBody" to notificationBody,
             "smsBody" to smsBody,

@@ -27,9 +27,9 @@ class CoreLogicTest {
         assertFalse(quiet.shouldQueue(message.copy(title = "未接来电"), LocalTime.of(23, 0)))
     }
 
-    @Test fun `template rejects unknown variables`() {
+    @Test fun `template keeps unknown variables instead of throwing`() {
         assertEquals("短信", MessageTemplate().renderTitle(message))
-        assertThrows(IllegalArgumentException::class.java) { MessageTemplate("{{bad}}", "{{body}}").renderTitle(message) }
+        assertEquals("{{bad}}", MessageTemplate("{{bad}}", "{{body}}").renderTitle(message))
     }
 
     @Test fun `template renders all supported variables`() {

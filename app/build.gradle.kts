@@ -18,7 +18,7 @@ android {
     namespace = "io.github.messagerelay"
     compileSdk = 36
     defaultConfig {
-        applicationId = "io.github.messagerelay"
+        applicationId = "io.github.messagerelay.dev"
         minSdk = 26
         targetSdk = 36
         versionCode = 4
@@ -41,7 +41,6 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
-    implementation("androidx.navigation:navigation-compose:2.9.6")
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.datastore:datastore-preferences:1.2.0")
     implementation("androidx.room:room-runtime:2.8.4")
