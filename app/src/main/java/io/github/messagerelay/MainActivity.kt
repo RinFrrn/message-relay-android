@@ -17,6 +17,9 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -24,9 +27,13 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -38,12 +45,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.CheckCircle
@@ -85,6 +95,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -101,6 +112,8 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -110,6 +123,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.composed
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
@@ -179,6 +194,25 @@ private object Motion {
     const val NAV_DURATION_MS = 280
     const val TAB_DURATION_MS = 180
     const val FADE_ONLY_DURATION_MS = 150
+}
+
+// 二级页返回动作。由 MessageRelayApp 在处于子页时提供，PageScaffold 读取并渲染返回按钮；
+// 主 Tab 页与引导流程不提供（保持 null），因此不会出现返回按钮。
+internal val LocalPageBack = staticCompositionLocalOf<(() -> Unit)?> { null }
+
+// Apple Design「即时反馈」：按压瞬间缩放（临界阻尼弹簧，无回弹），松手弹回。
+// 与 ripple 叠加使用，反馈发生在 pointer-down 而非点击完成之后。
+internal fun Modifier.pressScale(onClick: () -> Unit, enabled: Boolean = true): Modifier = composed {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed && enabled) 0.97f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 700f),
+        label = "press-scale"
+    )
+    this
+        .scale(scale)
+        .clickable(interactionSource = interaction, indication = LocalIndication.current, enabled = enabled, onClick = onClick)
 }
 
 @Composable
@@ -323,6 +357,8 @@ fun MessageRelayApp(openPermission: () -> Unit) {
                 fadeOut(tween(Motion.TAB_DURATION_MS, easing = Motion.EaseOut))
             AnimatedContent(targetState = tab, transitionSpec = { tabSpec }, label = "main-tab") { activeTab ->
                 AnimatedContent(targetState = subPage, transitionSpec = { navSpec }, label = "main-nav") { page ->
+                    // 处于二级页时提供返回动作；主 Tab 页不提供，PageScaffold 据此决定是否显示返回按钮。
+                    CompositionLocalProvider(LocalPageBack provides if (page != null) ({ pop() }) else null) {
                     val modifier = Modifier.padding(padding)
                     stateHolder.SaveableStateProvider(key = page to activeTab) {
                         when (page) {
@@ -390,6 +426,7 @@ fun MessageRelayApp(openPermission: () -> Unit) {
                                 )
                             }
                         }
+                    }
                     }
                 }
             }
@@ -1036,7 +1073,7 @@ private fun AddAppDialog(
                     items(filteredApps, key = { it.second }) { (name, pkg) ->
                         val isConfigured = pkg in configured
                         Row(
-                            Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(enabled = !isConfigured) { onAdd(name to pkg) }.padding(vertical = 6.dp),
+                            Modifier.fillMaxWidth().heightIn(min = 48.dp).pressScale(onClick = { onAdd(name to pkg) }, enabled = !isConfigured).padding(vertical = 6.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -1066,7 +1103,7 @@ private fun TemplateGroupHeader(title: String, description: String, colors: UiCo
 @Composable
 private fun TemplatePresetCard(template: TemplateDefinition, selected: Boolean, onOpenTemplateLibrary: (String?) -> Unit, colors: UiColors, onSelect: () -> Unit) {
     OutlinedCard(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).clickable(onClick = onSelect),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).pressScale(onClick = onSelect),
         colors = CardDefaults.outlinedCardColors(containerColor = colors.card),
         // 选中卡片用绿色描边 + 「已选择」徽标双重指示；未选卡片不再挂「可选择」徽标——
         // 该徽标不承载信息，12 张卡片各挂一个反而稀释了真正的状态信号。
@@ -1646,17 +1683,45 @@ private fun ManualChapter(title: String, text: String, colors: UiColors) {
 
 @Composable
 internal fun PageScaffold(title: String, subtitle: String? = null, modifier: Modifier = Modifier, colors: UiColors, scope: SettingScope? = null, content: @Composable ColumnScope.() -> Unit) {
+    val onBack = LocalPageBack.current
     Column(modifier.fillMaxSize().verticalScroll(rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }).padding(18.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(title, fontSize = 28.sp, fontWeight = FontWeight.Black, color = colors.ink)
-            if (scope != null) {
-                Spacer(Modifier.width(8.dp))
-                ScopeBadge(scope, colors)
+            if (onBack != null) {
+                PageBackButton(colors, onBack)
+                Spacer(Modifier.width(14.dp))
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                Text(title, fontSize = 28.sp, fontWeight = FontWeight.Black, color = colors.ink, letterSpacing = (-0.5).sp)
+                if (scope != null) {
+                    Spacer(Modifier.width(8.dp))
+                    ScopeBadge(scope, colors)
+                }
             }
         }
         if (!subtitle.isNullOrBlank()) Text(subtitle, color = colors.muted, lineHeight = 19.sp)
         Spacer(Modifier.height(16.dp))
         content()
+    }
+}
+
+// iOS 风格返回按钮：圆形描边按钮 + 按压缩放反馈，无障碍描述「返回」。
+@Composable
+private fun PageBackButton(colors: UiColors, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .size(38.dp)
+            .clip(CircleShape)
+            .pressScale(onClick)
+            .semantics { contentDescription = "返回" },
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(shape = CircleShape, color = colors.card, border = BorderStroke(1.dp, colors.border), modifier = Modifier.fillMaxSize()) {}
+        Icon(
+            Icons.AutoMirrored.Filled.ArrowBack,
+            contentDescription = null,
+            tint = colors.ink,
+            modifier = Modifier.size(20.dp)
+        )
     }
 }
 
@@ -1684,7 +1749,7 @@ internal fun SectionCard(title: String, subtitle: String? = null, icon: ImageVec
 
 @Composable
 private fun FeatureCard(title: String, status: String, icon: ImageVector, modifier: Modifier, onClick: () -> Unit, colors: UiColors) {
-    Surface(shape = RoundedCornerShape(12.dp), color = colors.card, shadowElevation = 1.dp, modifier = modifier.clickable(onClick = onClick)) {
+    Surface(shape = RoundedCornerShape(12.dp), color = colors.card, shadowElevation = 1.dp, modifier = modifier.pressScale(onClick)) {
         Column(Modifier.padding(14.dp)) {
             Icon(icon, contentDescription = null, tint = Indigo)
             Spacer(Modifier.height(8.dp))
@@ -1696,7 +1761,7 @@ private fun FeatureCard(title: String, status: String, icon: ImageVector, modifi
 
 @Composable
 private fun SetupStep(label: String, done: Boolean, onClick: () -> Unit, colors: UiColors) {
-    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 6.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+    Row(Modifier.fillMaxWidth().pressScale(onClick).padding(vertical = 6.dp), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(label, color = colors.ink, fontWeight = FontWeight.Medium)
         StatusBadge(if (done) "已完成" else "待配置", if (done) Success else Warning, colors)
     }
@@ -1705,7 +1770,7 @@ private fun SetupStep(label: String, done: Boolean, onClick: () -> Unit, colors:
 @Composable
 private fun SettingNavRow(title: String, subtitle: String, icon: ImageVector, onClick: () -> Unit, colors: UiColors, scope: SettingScope? = null, trailing: (@Composable () -> Unit)? = null) {
     OutlinedCard(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 5.dp),
+        modifier = Modifier.fillMaxWidth().pressScale(onClick).padding(vertical = 5.dp),
         colors = CardDefaults.outlinedCardColors(containerColor = colors.card),
         border = BorderStroke(1.dp, colors.border)
     ) {
@@ -1782,7 +1847,7 @@ private fun RecordLine(title: String, subtitle: String, colors: UiColors) {
 private fun LinkRow(label: String, url: String, colors: UiColors) {
     val context = LocalContext.current
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { openExternalLink(context, url) }.padding(vertical = 7.dp)
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).pressScale(onClick = { openExternalLink(context, url) }).padding(vertical = 7.dp)
             .semantics { contentDescription = "打开链接：$label" },
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically

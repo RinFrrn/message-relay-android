@@ -202,7 +202,7 @@ internal fun SimpleAppRow(
     val enabled = rule?.enabled == true
     val label = if (rule?.screenOffOnly == true) "仅息屏时推送 · ${templateLabel(rule.templateId, customTemplates)}" else templateLabel(rule?.templateId ?: templateId, customTemplates)
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable { onOpenSettings(appName to packageName) }.padding(vertical = 8.dp),
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).pressScale(onClick = { onOpenSettings(appName to packageName) }).padding(vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
