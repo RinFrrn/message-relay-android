@@ -40,6 +40,7 @@
 | 005 | [入口整合](005-entry-consolidation.md) | F9、F10 | HIGH | 3 文件 ~220 行 −90 行 | ✅ implemented（编译+单测+lint 通过，feel check 待真机） |
 | 006 | [死动作清理与细节打磨](006-dead-actions-and-polish.md) | F6、F11、F13–F18 | MED | 5 文件 ~150 行 −60 行 | ✅ implemented（编译+单测+lint 通过，feel check 待真机） |
 | 007 | [设置页直观化](007-settings-clarity.md) | 用户直提：设置不直观 | MED | 1 文件 ~200 行 | ✅ implemented（编译+单测+lint 通过，feel check 待真机） |
+| 008 | [UI 信息架构重设计](008-ui-information-architecture.md) | 用户直提：交互混乱/入口重复/缺标准标题栏 | HIGH | 3 文件 | ✅ implemented（编译+单测+lint 通过，feel check 待真机） |
 
 > **006 落地与原方案的差异/裁决**：
 > - F6a（模板库「发送测试」死按钮）已由 004 删除、F16（Onboarding 返回上一步）已由 002 完成，均无需重复处理。

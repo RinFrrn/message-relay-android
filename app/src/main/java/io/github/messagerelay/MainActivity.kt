@@ -39,6 +39,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -183,7 +184,7 @@ internal val CallTypesSaver: Saver<Set<CallEventType>, String> = Saver(
     restore = { CallEventTypes.parse(it) }
 )
 
-private val PackageSetSaver: Saver<Set<String>, Any> = listSaver<Set<String>, String>(
+internal val PackageSetSaver: Saver<Set<String>, Any> = listSaver<Set<String>, String>(
     save = { it.toList() },
     restore = { it.toSet() }
 )
@@ -252,7 +253,6 @@ private enum class SubPage {
     RecordPrivacy,
     Manual,
     Advanced,
-    AdvancedTemplates,
     SimManagement,
     AppRuleSettings,
     VersionUpdate,
@@ -280,9 +280,6 @@ fun MessageRelayApp(openPermission: () -> Unit) {
     val subStack = remember { mutableStateListOf<SubPage>() }
     val subPage = subStack.lastOrNull()
     var editingApp by rememberSaveable(stateSaver = AppPairSaver) { mutableStateOf<Pair<String, String>?>(null) }
-    // 从「消息模板列表 / 规则编辑页 / 软件选择」点编辑带来的目标模板 id（"" = 普通打开），
-    // 路由到模板库页后由 TemplateLibrary 消费并清空。
-    var templateEditIntent by rememberSaveable { mutableStateOf("") }
     var navDirection by remember { mutableStateOf(1) } // 1 = push，-1 = pop
     val reducedMotion = rememberReducedMotion()
 
@@ -367,7 +364,7 @@ fun MessageRelayApp(openPermission: () -> Unit) {
                                 editingApp = app
                                 push(SubPage.AppRuleSettings)
                             }
-                            SubPage.TemplatePresets -> SimpleTemplatePresetScreen(modifier, settings, repository, colors, onOpenTemplateLibrary = { id -> templateEditIntent = id ?: ""; push(SubPage.AdvancedTemplates) })
+                            SubPage.TemplatePresets -> SimpleTemplatePresetScreen(modifier, settings, repository, colors)
                             SubPage.QuietHours -> QuietHoursScreen(modifier, settings, repository, colors)
                             SubPage.BackgroundHealth -> BackgroundHealthScreen(modifier, openPermission, colors)
                             SubPage.BackupRestore -> BackupRestoreScreen(modifier, colors)
@@ -379,15 +376,12 @@ fun MessageRelayApp(openPermission: () -> Unit) {
                                 repository = repository,
                                 colors = colors
                             )
-                            SubPage.AdvancedTemplates -> PageScaffold("自定义消息模板", "维护全局模板；保存后在各 App 的规则编辑页选用。", modifier, colors, scope = SettingScope.GLOBAL) {
-                                TemplateLibrary(colors, editIntent = templateEditIntent, onEditIntentConsumed = { templateEditIntent = "" })
-                            }
-                            SubPage.SimManagement -> SimManagementScreen(modifier, colors)
-                            SubPage.AppRuleSettings -> editingApp?.let { AppRuleSettingsScreen(modifier, it.first, it.second, settings, colors, onOpenTemplateLibrary = { id -> templateEditIntent = id ?: ""; push(SubPage.AdvancedTemplates) }) }
+                            SubPage.AppRuleSettings -> editingApp?.let { AppRuleSettingsScreen(modifier, it.first, it.second, settings, colors, onDeleted = { editingApp = null; pop() }) }
                                 ?: SimpleAppSelectionScreen(modifier, settings, repository, colors) { app ->
                                     editingApp = app
                                     push(SubPage.AppRuleSettings)
                                 }
+                            SubPage.SimManagement -> SimManagementScreen(modifier, colors)
                             SubPage.VersionUpdate -> VersionUpdateScreen(modifier, settings, repository, colors)
                             SubPage.About -> AboutMessageRelayScreen(modifier, colors)
                             null -> when (activeTab) {
@@ -400,10 +394,10 @@ fun MessageRelayApp(openPermission: () -> Unit) {
                                     onOpenChannel = { push(SubPage.PushChannels) },
                                     onOpenApps = { push(SubPage.AppSelection) },
                                     onOpenTemplates = { push(SubPage.TemplatePresets) },
-                                    onOpenQuiet = { push(SubPage.QuietHours) },
-                                    onOpenBackground = { push(SubPage.BackgroundHealth) },
-                                    onOpenBackup = { push(SubPage.BackupRestore) },
-                                    onOpenRecords = { tab = MainTab.Records }
+                                    onOpenAppSettings = { app ->
+                                        editingApp = app
+                                        push(SubPage.AppRuleSettings)
+                                    }
                                 )
                                 MainTab.Records -> Records(modifier, colors) { push(SubPage.AppSelection) }
                                 MainTab.Settings -> SettingsHub(
@@ -517,10 +511,7 @@ private fun Home(
     onOpenChannel: () -> Unit,
     onOpenApps: () -> Unit,
     onOpenTemplates: () -> Unit,
-    onOpenQuiet: () -> Unit,
-    onOpenBackground: () -> Unit,
-    onOpenBackup: () -> Unit,
-    onOpenRecords: () -> Unit
+    onOpenAppSettings: (Pair<String, String>) -> Unit
 ) {
     val context = LocalContext.current
     val dao = remember { RelayDatabase.get(context).relayDao() }
@@ -528,14 +519,15 @@ private fun Home(
     val since = remember { LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli() }
     val count by dao.recordCountSince(since).collectAsState(initial = 0)
     val queued by dao.queuedCount().collectAsState(initial = 0)
-    val records by dao.recentRecords(5).collectAsState(initial = emptyList())
     val rules by dao.rulesFlow().collectAsState(initial = emptyList())
-    val templates by dao.templatesFlow().collectAsState(initial = emptyList())
     val channels = remember { ChannelSelection.normalized(storedChannels(context)) }
     val primaryChannels = ChannelSelection.primaryEnabled(channels, settings.primaryChannelId)
     val ready = primaryChannels.isNotEmpty() && rules.isNotEmpty() && settings.selectedTemplatePreset.isNotBlank()
+    // 配置进度可折叠：未完成时默认展开引导，完成后自动收成一行（用户可再点开复查）。
+    var stepsToggled by rememberSaveable { mutableStateOf(false) }
+    val stepsExpanded = if (stepsToggled) ready else !ready
 
-    PageScaffold("消息接力", "简单模式优先，按状态卡逐项修复。", modifier, colors) {
+    PageScaffold("消息接力", "转发状态与转发的应用；其余功能入口都在「设置」里。", modifier, colors) {
         SectionCard("运行状态", null, Icons.Outlined.PlayCircle, colors) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Column(Modifier.weight(1f)) {
@@ -546,31 +538,32 @@ private fun Home(
             }
         }
         Spacer(Modifier.height(12.dp))
-        SectionCard(if (ready) "首次配置进度" else "需要修复配置", if (ready) "关键配置已完成。" else "按下面三项完成基础配置。", Icons.Outlined.CheckCircle, colors) {
-            SetupStep("1. 推送渠道", primaryChannels.isNotEmpty(), onOpenChannel, colors)
-            SetupStep("2. 软件选择", rules.isNotEmpty(), onOpenApps, colors)
-            SetupStep("3. 消息模板", settings.selectedTemplatePreset.isNotBlank(), onOpenTemplates, colors)
-            OutlinedButton(onClick = openPermission, modifier = Modifier.fillMaxWidth()) { Text("检查通知访问权限") }
+        Surface(shape = RoundedCornerShape(16.dp), color = colors.card, shadowElevation = 2.dp, modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Row(
+                    Modifier.fillMaxWidth().pressScale(onClick = { stepsToggled = !stepsToggled }),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Outlined.CheckCircle, contentDescription = null, tint = if (ready) Success else Indigo)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(if (ready) "首次配置已完成" else "需要修复配置", color = colors.ink, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        if (!stepsExpanded) Text("三项基础配置均已就绪，点这里展开复查。", color = colors.muted, lineHeight = 19.sp)
+                    }
+                    Text(if (stepsExpanded) "收起" else "展开", color = Indigo, fontSize = 13.sp)
+                }
+                if (stepsExpanded) {
+                    Spacer(Modifier.height(10.dp))
+                    SetupStep("1. 推送渠道", primaryChannels.isNotEmpty(), onOpenChannel, colors)
+                    SetupStep("2. 软件选择", rules.isNotEmpty(), onOpenApps, colors)
+                    SetupStep("3. 消息模板", settings.selectedTemplatePreset.isNotBlank(), onOpenTemplates, colors)
+                    OutlinedButton(onClick = openPermission, modifier = Modifier.fillMaxWidth()) { Text("检查通知访问权限") }
+                }
+            }
         }
         Spacer(Modifier.height(12.dp))
-        FeatureCard("推送渠道", primaryChannels.firstOrNull()?.name ?: "待配置", Icons.Outlined.Notifications, Modifier.fillMaxWidth(), onOpenChannel, colors)
-        Spacer(Modifier.height(10.dp))
-        FeatureCard("软件选择", if (rules.isEmpty()) "待选择" else "已选择 ${rules.size} 个", Icons.Outlined.List, Modifier.fillMaxWidth(), onOpenApps, colors)
-        Spacer(Modifier.height(10.dp))
-        FeatureCard("消息模板", templateLabel(settings.selectedTemplatePreset, templates), Icons.Outlined.CheckCircle, Modifier.fillMaxWidth(), onOpenTemplates, colors)
-        Spacer(Modifier.height(10.dp))
-        FeatureCard("免打扰", if (settings.quietEnabled) "${settings.quietStart}-${settings.quietEnd}" else "未开启", Icons.Outlined.Schedule, Modifier.fillMaxWidth(), onOpenQuiet, colors)
-        Spacer(Modifier.height(10.dp))
-        FeatureCard("后台运行", "权限与保活检查", Icons.Outlined.PlayCircle, Modifier.fillMaxWidth(), onOpenBackground, colors)
-        Spacer(Modifier.height(10.dp))
-        FeatureCard("记录保存", retentionLabel(settings.historyRetention), Icons.Outlined.History, Modifier.fillMaxWidth(), onOpenRecords, colors)
-        Spacer(Modifier.height(10.dp))
-        FeatureCard("备份与恢复", "导出配置", Icons.Outlined.CheckCircle, Modifier.fillMaxWidth(), onOpenBackup, colors)
-        Spacer(Modifier.height(12.dp))
-        SectionCard("最近记录", null, Icons.Outlined.History, colors) {
-            records.forEach { RecordLine("${it.app} · ${it.status}", PrivacyDisplay.title(it.title, settings.privacyDisplayMode), colors) }
-            if (records.isEmpty()) EmptyText("暂无记录", colors)
-        }
+        // 软件选择（已配置应用列表）直接放首页：这是用户日常最高频的管理对象。
+        ConfiguredAppsCard(settings, colors, onOpenAppSettings)
     }
 }
 
@@ -689,13 +682,12 @@ private fun SettingsHub(
             ?: TemplateCatalog.displayName(settings.selectedTemplatePreset)
     }
     val primaryChannelName = channels.firstOrNull { it.id == settings.primaryChannelId }?.name ?: channels.firstOrNull()?.name
-    PageScaffold("设置", "「全局」对所有 App 生效，「按应用」每个 App 单独一份；常用功能放前面。", modifier, colors) {
+    PageScaffold("设置", "常用功能放前面，点进去逐项配置。", modifier, colors) {
         SettingsGroup("转发设置", colors)
-        SettingNavRow("软件选择", "$enabledApps 个 App 启用转发", Icons.Outlined.Apps, onOpenApps, colors, scope = SettingScope.PER_APP)
-        SettingNavRow("消息模板", "默认：$defaultTemplateName · 自定义 $customTemplateCount 个", Icons.Outlined.Description, onOpenTemplates, colors, scope = SettingScope.GLOBAL)
+        SettingNavRow("转发来源（软件选择）", "$enabledApps 个 App 启用转发", Icons.Outlined.Apps, onOpenApps, colors)
+        SettingNavRow("消息模板", "默认：$defaultTemplateName · 自定义 $customTemplateCount 个", Icons.Outlined.Description, onOpenTemplates, colors)
         SettingNavRow(
             "免打扰", "跨午夜时段与关键词例外，支持重要关键词例外。", Icons.Outlined.Schedule, onOpenQuiet, colors,
-            scope = SettingScope.GLOBAL,
             trailing = {
                 StatusBadge(
                     if (settings.quietEnabled) "${settings.quietStart}-${settings.quietEnd}" else "未开启",
@@ -707,19 +699,18 @@ private fun SettingsHub(
         SettingNavRow(
             "记录与隐私",
             "保留 ${retentionLabel(settings.historyRetention)} · ${privacyLabel(settings.privacyDisplayMode)}",
-            Icons.Outlined.History, onOpenRecordPrivacy, colors, scope = SettingScope.GLOBAL
+            Icons.Outlined.History, onOpenRecordPrivacy, colors
         )
         SettingsGroup("推送与数据", colors)
         SettingNavRow(
             "推送渠道",
             if (channels.isEmpty()) "尚未配置，先添加 Bark、飞书或钉钉。" else "已配置 ${channels.size} 个 · 主渠道 ${primaryChannelName ?: "未选择"}",
             Icons.Outlined.Notifications, onOpenChannel, colors,
-            scope = SettingScope.GLOBAL,
             trailing = if (channels.isEmpty()) ({ StatusBadge("未配置", Danger, colors) }) else null
         )
-        SettingNavRow("备份与恢复", "导出或恢复基础配置。", Icons.Outlined.Save, onOpenBackup, colors, scope = SettingScope.GLOBAL)
+        SettingNavRow("备份与恢复", "导出或恢复基础配置。", Icons.Outlined.Save, onOpenBackup, colors)
         SettingsGroup("应用", colors)
-        SectionCard("外观", "默认跟随系统，也可以固定浅色或深色。", Icons.Outlined.Palette, colors, scope = SettingScope.GLOBAL) {
+        SectionCard("外观", "默认跟随系统，也可以固定浅色或深色。", Icons.Outlined.Palette, colors) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色").forEach { (mode, label) ->
                     OutlinedButton(onClick = { scope.launch { repository.setThemeMode(mode) } }) { Text(label) }
@@ -727,9 +718,9 @@ private fun SettingsHub(
             }
         }
         SettingNavRow("后台运行", "检查通知访问、通知权限和后台保活。", Icons.Outlined.PlayCircle, onOpenBackground, colors)
-        SettingNavRow("SIM 卡管理", "查看电话相关的 SIM 信息。", Icons.Outlined.SimCard, onOpenSimManagement, colors, scope = SettingScope.GLOBAL)
+        SettingNavRow("SIM 卡管理", "查看电话相关的 SIM 信息。", Icons.Outlined.SimCard, onOpenSimManagement, colors)
         SettingsGroup("高级设置", colors)
-        SettingNavRow("高级设置区域", "多渠道同时发送、失败重试等全局行为开关。", Icons.Outlined.Tune, {
+        SettingNavRow("高级设置区域", "失败自动重试等全局行为开关。", Icons.Outlined.Tune, {
             if (settings.advancedAcknowledged) onOpenAdvanced() else showAdvancedDialog = true
         }, colors)
         SettingsGroup("帮助与关于", colors)
@@ -748,7 +739,7 @@ private fun SettingsHub(
         AlertDialog(
             onDismissRequest = { showAdvancedDialog = false },
             title = { Text("进入高级设置？") },
-            text = { Text("这里包含多渠道同时发送和失败自动重试等全局开关，错误配置可能导致消息漏发或重复发送。") },
+            text = { Text("这里包含失败自动重试等全局开关，错误配置可能导致消息漏发或重复发送。") },
             confirmButton = {
                 TextButton(onClick = {
                     scope.launch { repository.setAdvancedAcknowledged(true) }
@@ -773,55 +764,88 @@ private fun PushChannelScreen(modifier: Modifier, settings: AppSettings, reposit
     var editorOpen by remember { mutableStateOf(false) }
     var editorTarget by remember { mutableStateOf<ChannelConfig?>(null) }
     var deleting by remember { mutableStateOf<ChannelConfig?>(null) }
+    // Bark 绑定也走弹窗（R2 简单实体弹窗模式）：bindingTarget 非 null 即打开绑定选择。
+    var bindingTarget by remember { mutableStateOf<ChannelConfig?>(null) }
     val secureStore = remember { SecureStore(context) }
     val unreadableChannels = secureStore.hasUnreadableValue("channels")
-    PageScaffold("推送渠道", "可以保存多个渠道，从中选择一个作为主推送渠道。", modifier, colors, scope = SettingScope.GLOBAL) {
+    fun persist(updated: List<ChannelConfig>) {
+        SecureStore(context).put("channels", ChannelSender.serialize(updated))
+        channels = updated
+    }
+    PageScaffold(
+        "推送渠道", "这些渠道决定所有 App 的消息发到哪里；个别 App 可以在它的规则里单独指定 Bark。", modifier, colors,
+        actions = { TextButton(onClick = { editorTarget = null; editorOpen = true }) { Text("＋ 添加") } }
+    ) {
         if (unreadableChannels) {
             SectionCard("渠道配置读取失败", "系统无法解密已保存的渠道。请重新保存渠道，或导入之前导出的备份。", Icons.Outlined.Tune, colors) {
                 StatusBadge("需要重新保存渠道", Danger, colors)
             }
             Spacer(Modifier.height(12.dp))
         }
-        SectionCard("主推送渠道", "点单选钮切换主渠道；「编辑」「删除」管理对应渠道。", Icons.Outlined.Notifications, colors) {
+        // 「发到哪里」只在这一处控制：关掉多渠道 = 主渠道单选；打开 = 全部启用渠道（009 A3，
+        // 多渠道开关从高级设置挪到这里，与主渠道单选同卡，同一概念不再分两处）。
+        SectionCard("发送到哪些渠道", "所有 App 的默认发送目标；被单独指定 Bark 的 App 例外（见 App 规则里的「发送渠道」）。", Icons.Outlined.Notifications, colors) {
+            SettingSwitchRow("同时发送到全部渠道", settings.multiChannelSend, { scope.launch { repository.setMultiChannelSend(it) } }, colors)
+            Text(
+                if (settings.multiChannelSend) "开启中：每条消息会同时发到下面全部渠道，无需选主渠道。" else "关闭中：从下面选一个主渠道，所有消息只发到它。",
+                color = colors.muted, fontSize = 13.sp, lineHeight = 18.sp
+            )
+        }
+        Spacer(Modifier.height(12.dp))
+        SectionCard(
+            if (settings.multiChannelSend) "渠道列表" else "渠道列表 · 单选主渠道",
+            if (settings.multiChannelSend) null else "点单选钮切换主渠道；「编辑」「删除」管理对应渠道。",
+            Icons.Outlined.Notifications, colors
+        ) {
             channels.forEach { channel ->
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(channel.name, color = colors.ink, fontWeight = FontWeight.Bold)
-                        Text(channelName(channel.type), color = colors.muted, lineHeight = 18.sp)
-                        if (channel.type == "bark" && channel.boundPackages().isNotEmpty()) {
-                            Text("已绑定 ${channel.boundPackages().size} 个 App", color = Indigo, fontSize = 13.sp)
+                Column(Modifier.fillMaxWidth()) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(channel.name, color = colors.ink, fontWeight = FontWeight.Bold)
+                            Text(channelName(channel.type), color = colors.muted, lineHeight = 18.sp)
+                        }
+                        TextButton(onClick = {
+                            editorTarget = channel
+                            editorOpen = true
+                        }) { Text("编辑") }
+                        TextButton(onClick = { deleting = channel }) { Text("删除") }
+                        if (!settings.multiChannelSend) {
+                            RadioButton(selected = settings.primaryChannelId == channel.id, onClick = { scope.launch { repository.setPrimaryChannelId(channel.id) } })
                         }
                     }
-                    TextButton(onClick = {
-                        editorTarget = channel
-                        editorOpen = true
-                    }) { Text("编辑") }
-                    TextButton(onClick = { deleting = channel }) { Text("删除") }
-                    RadioButton(selected = settings.primaryChannelId == channel.id, onClick = { scope.launch { repository.setPrimaryChannelId(channel.id) } })
+                    // Bark 的发送范围直接显示在渠道行内（009 A1：绑定并入渠道卡，
+                    // 不再用页面底部独立的绑定区块——绑定关系必须在渠道所在位置可见）。
+                    if (channel.type == "bark") {
+                        val boundNames = remember(channel, rules) {
+                            rules.filter { it.packageName in channel.boundPackages() }.map { it.appName }
+                        }
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                if (boundNames.isEmpty()) "发送范围：全部应用（默认）"
+                                else "发送范围：仅 ${boundNames.joinToString("、")}",
+                                color = if (boundNames.isEmpty()) colors.muted else Indigo,
+                                fontSize = 13.sp, modifier = Modifier.weight(1f)
+                            )
+                            TextButton(onClick = { bindingTarget = channel }) { Text(if (boundNames.isEmpty()) "绑定应用" else "管理绑定") }
+                        }
+                    }
                 }
             }
-            if (channels.isEmpty()) EmptyText("还没有保存渠道，点下方按钮添加一个。", colors)
+            if (channels.isEmpty()) EmptyText("还没有保存渠道，点右上角「＋ 添加」一个。", colors)
         }
-        Spacer(Modifier.height(12.dp))
-        PrimaryAction("＋ 添加渠道", colors) {
-            editorTarget = null
-            editorOpen = true
-        }
-        Spacer(Modifier.height(12.dp))
-        channels.filter { it.type == "bark" }.forEach { bark ->
-            BarkBindingCard(
-                bark = bark,
-                rules = rules,
-                channels = channels,
-                colors = colors,
-                onSave = { updated ->
-                    val saved = channels.map { if (it.id == updated.id) updated else it }
-                    SecureStore(context).put("channels", ChannelSender.serialize(saved))
-                    channels = saved
-                }
-            )
-            Spacer(Modifier.height(10.dp))
-        }
+    }
+    bindingTarget?.let { bark ->
+        BarkBindingDialog(
+            bark = bark,
+            rules = rules,
+            channels = channels,
+            colors = colors,
+            onDismiss = { bindingTarget = null },
+            onSave = { updated ->
+                persist(channels.map { if (it.id == updated.id) updated else it })
+                bindingTarget = null
+            }
+        )
     }
     if (editorOpen) {
         ChannelEditorDialog(
@@ -935,41 +959,55 @@ private fun ChannelEditorDialog(
     )
 }
 
+/**
+ * Bark 绑定弹窗：选择哪些 App 只发到这个 Bark。
+ * 绑定语义（PerAppRouteResolver）：这些 App 的 Bark 推送会【挤掉】全局目标里的 Bark，
+ * 只发到绑定的 Bark；非 Bark 渠道不受影响——必须在弹窗里讲清，否则用户会以为是“额外发送”。
+ */
 @Composable
-private fun BarkBindingCard(
+private fun BarkBindingDialog(
     bark: ChannelConfig,
     rules: List<RuleEntity>,
     channels: List<ChannelConfig>,
     colors: UiColors,
+    onDismiss: () -> Unit,
     onSave: (ChannelConfig) -> Unit
 ) {
     var selected by rememberSaveable(bark.id, bark.boundAppPackages, stateSaver = PackageSetSaver) { mutableStateOf(bark.boundPackages()) }
-    SectionCard("${bark.name} 绑定 App", "可选。绑定后这些 App 的 Bark 推送只发到这个 Bark。", Icons.Outlined.Notifications, colors, scope = SettingScope.PER_APP) {
-        if (rules.isEmpty()) {
-            EmptyText("请先在“软件选择”里添加要转发的 App。", colors)
-        } else {
-            rules.forEach { rule ->
-                val checked = rule.packageName in selected
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Column(Modifier.weight(1f)) {
-                        Text(rule.appName, color = colors.ink, fontWeight = FontWeight.Medium)
-                        Text(rule.packageName, color = colors.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("「${bark.name}」绑定应用") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("勾选的 App 只发到这个 Bark，不再发主渠道里的其他 Bark；没勾选的 App 照常走默认发送目标。", color = colors.muted, fontSize = 13.sp, lineHeight = 18.sp)
+                if (rules.isEmpty()) {
+                    EmptyText("请先在「软件选择」里添加要转发的 App。", colors)
+                } else {
+                    rules.forEach { rule ->
+                        val checked = rule.packageName in selected
+                        Row(Modifier.fillMaxWidth().heightIn(min = 40.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(rule.appName, color = colors.ink, fontWeight = FontWeight.Medium)
+                                Text(rule.packageName, color = colors.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                            Checkbox(checked = checked, onCheckedChange = { value ->
+                                selected = if (value) selected + rule.packageName else selected - rule.packageName
+                            })
+                        }
                     }
-                    Checkbox(checked = checked, onCheckedChange = { value ->
-                        selected = if (value) selected + rule.packageName else selected - rule.packageName
-                    })
+                    val duplicateBindings = channels.filter { it.type == "bark" && it.id != bark.id }
+                        .filter { other -> selected.any { it in other.boundPackages() } }
+                    if (duplicateBindings.isNotEmpty()) {
+                        Text("提示：同一个 App 可以绑定多个 Bark，会同时发送到这些 Bark。", color = colors.muted, fontSize = 13.sp, lineHeight = 18.sp)
+                    }
                 }
             }
-            val duplicateBindings = channels.filter { it.type == "bark" && it.id != bark.id }
-                .filter { other -> selected.any { it in other.boundPackages() } }
-            if (duplicateBindings.isNotEmpty()) {
-                Text("提示：同一个 App 可以绑定多个 Bark，会同时发送到这些 Bark。", color = colors.muted, lineHeight = 18.sp)
-            }
-            PrimaryAction("保存绑定 App", colors) {
-                onSave(bark.copy(boundAppPackages = selected.sorted().joinToString("\n")))
-            }
-        }
-    }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(bark.copy(boundAppPackages = selected.sorted().joinToString("\n"))) }) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
 }
 
 @Composable
@@ -980,6 +1018,18 @@ private fun SimpleAppSelectionScreen(
     colors: UiColors,
     onOpenAppSettings: (Pair<String, String>) -> Unit
 ) {
+    PageScaffold("软件选择", "管理已配置转发规则的应用；点应用行进入规则编辑。", modifier, colors) {
+        ConfiguredAppsCard(settings, colors, onOpenAppSettings)
+    }
+}
+
+/**
+ * 「已配置应用」卡：规则列表 + 底部「＋ 添加应用」弹窗入口。
+ * 首页（仪表盘）和软件选择页共用同一块内容，避免两处实现漂移。
+ * 删除规则收敛到各 App 的规则编辑页底部（列表行不放删除，避免误触）。
+ */
+@Composable
+private fun ConfiguredAppsCard(settings: AppSettings, colors: UiColors, onOpenAppSettings: (Pair<String, String>) -> Unit) {
     val context = LocalContext.current
     val dao = remember { RelayDatabase.get(context).relayDao() }
     val scope = rememberCoroutineScope()
@@ -990,44 +1040,25 @@ private fun SimpleAppSelectionScreen(
     val hitMap = remember(hitCounts) { hitCounts.associate { it.packageName to it.count } }
     val installedApps = rememberInstalledApps()
     var showAddApp by remember { mutableStateOf(false) }
-    var deletingRule by remember { mutableStateOf<RuleEntity?>(null) }
-    PageScaffold("软件选择", "管理已配置转发规则的应用；添加新应用点下方「添加应用」。", modifier, colors, scope = SettingScope.PER_APP) {
-        // 列表只显示「已配置应用」（有规则的应用）：此前「推荐应用」按安装与否展示，
-        // 混入了没配置的 App，而真正要管理的对象是规则；添加新应用统一走「添加应用」弹窗。
-        // 删除规则也在行内（带确认弹窗），原「批量管理规则」页因与已配置应用列表完全重复而移除。
-        SectionCard("已配置应用", "点应用行进入规则编辑页调整关键词、模板等细节；开关只控制启用。", Icons.Outlined.CheckCircle, colors) {
-            rules.forEach { rule ->
-                SimpleAppRow(
-                    rule.appName,
-                    rule.packageName,
-                    rule,
-                    settings.selectedTemplatePreset,
-                    customTemplates,
-                    hitMap[rule.packageName] ?: 0,
-                    colors,
-                    onOpenAppSettings,
-                    onRuleChange = { updated -> scope.launch { dao.saveRule(updated) } },
-                    onDelete = { deletingRule = it }
-                )
-            }
-            if (rules.isEmpty()) EmptyText("还没有配置任何应用，点下方「添加应用」开始（微信、短信、电话都能搜到）。", colors)
+    // 列表只显示「已配置应用」（有规则的应用）：此前「推荐应用」按安装与否展示，
+    // 混入了没配置的 App，而真正要管理的对象是规则；添加新应用统一走「添加应用」弹窗。
+    SectionCard("已配置应用", "点应用行进入规则编辑页调整关键词、模板等细节；开关只控制启用。", Icons.Outlined.CheckCircle, colors) {
+        rules.forEach { rule ->
+            SimpleAppRow(
+                rule.appName,
+                rule.packageName,
+                rule,
+                settings.selectedTemplatePreset,
+                customTemplates,
+                hitMap[rule.packageName] ?: 0,
+                colors,
+                onOpenAppSettings,
+                onRuleChange = { updated -> scope.launch { dao.saveRule(updated) } }
+            )
         }
-        Spacer(Modifier.height(12.dp))
-        PrimaryAction("＋ 添加应用", colors) { showAddApp = true }
-    }
-    deletingRule?.let { rule ->
-        AlertDialog(
-            onDismissRequest = { deletingRule = null },
-            title = { Text("删除「${rule.appName}」的转发规则？") },
-            text = { Text("关键词、模板等配置会一并删除；历史记录保留。重新添加应用可随时重建规则。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    deletingRule = null
-                    scope.launch { dao.deleteRule(rule.packageName) }
-                }) { Text("删除") }
-            },
-            dismissButton = { TextButton(onClick = { deletingRule = null }) { Text("取消") } }
-        )
+        if (rules.isEmpty()) EmptyText("还没有配置任何应用，点下方「＋ 添加应用」开始（微信、短信、电话都能搜到）。", colors)
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(onClick = { showAddApp = true }, modifier = Modifier.fillMaxWidth()) { Text("＋ 添加应用") }
     }
     if (showAddApp) {
         AddAppDialog(
@@ -1101,7 +1132,7 @@ private fun TemplateGroupHeader(title: String, description: String, colors: UiCo
 }
 
 @Composable
-private fun TemplatePresetCard(template: TemplateDefinition, selected: Boolean, onOpenTemplateLibrary: (String?) -> Unit, colors: UiColors, onSelect: () -> Unit) {
+private fun TemplatePresetCard(template: TemplateDefinition, selected: Boolean, onEdit: ((TemplateDefinition) -> Unit)? = null, colors: UiColors, onSelect: () -> Unit) {
     OutlinedCard(
         modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).pressScale(onClick = onSelect),
         colors = CardDefaults.outlinedCardColors(containerColor = colors.card),
@@ -1112,8 +1143,8 @@ private fun TemplatePresetCard(template: TemplateDefinition, selected: Boolean, 
         Column(Modifier.padding(14.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(template.name, color = colors.ink, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                if (!template.builtIn) {
-                    TextButton(onClick = { onOpenTemplateLibrary(template.id) }) { Text("编辑") }
+                if (!template.builtIn && onEdit != null) {
+                    TextButton(onClick = { onEdit(template) }) { Text("编辑") }
                 }
                 if (selected) StatusBadge("已选择", Success, colors)
             }
@@ -1125,7 +1156,7 @@ private fun TemplatePresetCard(template: TemplateDefinition, selected: Boolean, 
 }
 
 @Composable
-private fun SimpleTemplatePresetScreen(modifier: Modifier, settings: AppSettings, repository: AppSettingsRepository, colors: UiColors, onOpenTemplateLibrary: (String?) -> Unit) {
+private fun SimpleTemplatePresetScreen(modifier: Modifier, settings: AppSettings, repository: AppSettingsRepository, colors: UiColors) {
     val context = LocalContext.current
     val dao = remember { RelayDatabase.get(context).relayDao() }
     val scope = rememberCoroutineScope()
@@ -1133,6 +1164,8 @@ private fun SimpleTemplatePresetScreen(modifier: Modifier, settings: AppSettings
     var preview by remember { mutableStateOf("") }
     var batchStatus by remember { mutableStateOf("") }
     var confirmBatch by remember { mutableStateOf(false) }
+    // 就地编辑的自定义模板（弹窗内完成，不再跳页）。
+    var editingTemplate by remember { mutableStateOf<TemplateEntity?>(null) }
     val choices = TemplateCatalog.allTemplates(templates)
     val select: (TemplateDefinition) -> Unit = { template ->
         scope.launch { repository.setSelectedTemplatePreset(template.id) }
@@ -1141,29 +1174,39 @@ private fun SimpleTemplatePresetScreen(modifier: Modifier, settings: AppSettings
     val customChoices = TemplateCatalog.customTemplates(templates).map(TemplateEntity::definition)
     val generalPresets = choices.filter { it.builtIn && it.id !in setOf("phone", "sms") }
     val specialPresets = choices.filter { it.builtIn && it.id in setOf("phone", "sms") }
-    PageScaffold("消息模板", "全局默认模板：新建 App 规则时使用；已有规则在「软件选择」里按 App 单独修改。", modifier, colors, scope = SettingScope.GLOBAL) {
+    val editTemplate: (TemplateDefinition) -> Unit = { def ->
+        editingTemplate = TemplateCatalog.customTemplates(templates).firstOrNull { it.id == def.id }
+    }
+    PageScaffold("消息模板", "全局默认模板：新建 App 规则时使用；已有规则在「软件选择」里按 App 单独修改。", modifier, colors) {
         // 层级按「通用 → 专用 → 自定义」三组呈现：此前 12 张卡片平铺且每张全量展开，
         // 通用预设和自己建的模板混在一起，扫一眼分不清归属。
         TemplateGroupHeader("通用模板", "适配大多数 App 的通知转发格式。", colors)
-        generalPresets.forEach { template -> TemplatePresetCard(template, settings.selectedTemplatePreset == template.id, onOpenTemplateLibrary, colors) { select(template) } }
+        generalPresets.forEach { template -> TemplatePresetCard(template, settings.selectedTemplatePreset == template.id, colors = colors) { select(template) } }
         Spacer(Modifier.height(12.dp))
         TemplateGroupHeader("电话与短信专用", "带归属地、卡槽等专属变量，新建对应规则时自动推荐。", colors)
-        specialPresets.forEach { template -> TemplatePresetCard(template, settings.selectedTemplatePreset == template.id, onOpenTemplateLibrary, colors) { select(template) } }
+        specialPresets.forEach { template -> TemplatePresetCard(template, settings.selectedTemplatePreset == template.id, colors = colors) { select(template) } }
         Spacer(Modifier.height(12.dp))
-        TemplateGroupHeader("自定义模板", if (customChoices.isEmpty()) "还没有自定义模板，到下方「自定义模板库」新建。" else "自己创建的模板；点「编辑」可直接修改。", colors)
-        customChoices.forEach { template -> TemplatePresetCard(template, settings.selectedTemplatePreset == template.id, onOpenTemplateLibrary, colors) { select(template) } }
+        TemplateGroupHeader("自定义模板", "自己创建的模板；添加、编辑、删除都在本页弹窗内完成。", colors)
+        customChoices.forEach { template -> TemplatePresetCard(template, settings.selectedTemplatePreset == template.id, onEdit = editTemplate, colors = colors) { select(template) } }
+        Spacer(Modifier.height(12.dp))
+        // 自定义模板的管理块（列表 + 添加 + 删除确认；编辑走上方卡片或此处的弹窗）。
+        TemplateLibrary(colors)
         Spacer(Modifier.height(12.dp))
         OutlinedButton(onClick = { confirmBatch = true }, modifier = Modifier.fillMaxWidth()) { Text("批量应用到全部已有规则") }
         if (batchStatus.isNotBlank()) {
             Spacer(Modifier.height(8.dp))
             StatusBadge(batchStatus, Success, colors)
         }
-        Spacer(Modifier.height(6.dp))
-        SettingNavRow("自定义模板库", "在此添加新模板；上面列表里的自定义模板可直接点「编辑」修改。", Icons.Outlined.List, { onOpenTemplateLibrary(null) }, colors, scope = SettingScope.GLOBAL)
         if (preview.isNotBlank()) {
             Spacer(Modifier.height(12.dp))
             SectionCard("本地预览", null, Icons.Outlined.CheckCircle, colors) { Text(preview, color = colors.ink, lineHeight = 20.sp) }
         }
+    }
+    editingTemplate?.let { target ->
+        TemplateEditorDialog(initial = target, colors = colors, onDismiss = { editingTemplate = null }, onSave = { name, title, body ->
+            scope.launch { dao.saveTemplate(target.copy(name = name, title = title, body = body)) }
+            editingTemplate = null
+        })
     }
     if (confirmBatch) {
         val target = settings.selectedTemplatePreset
@@ -1202,7 +1245,7 @@ private fun QuietHoursScreen(modifier: Modifier, settings: AppSettings, reposito
     var start by rememberSaveable(settings.quietStart) { mutableStateOf(settings.quietStart) }
     var end by rememberSaveable(settings.quietEnd) { mutableStateOf(settings.quietEnd) }
     var urgent by rememberSaveable(settings.urgentKeywords) { mutableStateOf(settings.urgentKeywords.ifBlank { "验证码\n来电\n未接来电" }) }
-    PageScaffold("免打扰", "普通消息在免打扰时段会被过滤，重要消息可以例外。", modifier, colors, scope = SettingScope.GLOBAL) {
+    PageScaffold("免打扰", "普通消息在免打扰时段会被过滤，重要消息可以例外。", modifier, colors) {
         SectionCard("免打扰", "支持跨午夜，例如 23:00-08:00。", Icons.Outlined.Schedule, colors) {
             SettingSwitchRow("启用免打扰", settings.quietEnabled, { scope.launch { repository.setQuiet(it, start, end, urgent) } }, colors)
             OutlinedTextField(start, { start = it }, label = { Text("开始时间 HH:mm") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
@@ -1277,7 +1320,7 @@ private fun BackupRestoreScreen(modifier: Modifier, colors: UiColors) {
     val scope = rememberCoroutineScope()
     var backupText by rememberSaveable { mutableStateOf("") }
     var backupStatus by remember { mutableStateOf("") }
-    PageScaffold("备份与恢复", "默认备份基础配置，历史记录不默认包含。", modifier, colors, scope = SettingScope.GLOBAL) {
+    PageScaffold("备份与恢复", "默认备份基础配置，历史记录不默认包含。", modifier, colors) {
         SectionCard("配置文件", "备份可能包含 Bark Token / Webhook 等敏感配置，请勿公开分享。", Icons.Outlined.CheckCircle, colors) {
             OutlinedButton(onClick = { scope.launch { backupText = ConfigBackup.export(context, false); backupStatus = "已导出基础配置" } }, modifier = Modifier.fillMaxWidth()) { Text("导出基础配置") }
             OutlinedTextField(backupText, { backupText = it }, label = { Text("备份内容 / 恢复内容") }, modifier = Modifier.fillMaxWidth(), minLines = 5)
@@ -1302,7 +1345,7 @@ private fun privacyLabel(value: String): String = when (value) {
 @Composable
 private fun RecordPrivacyScreen(modifier: Modifier, settings: AppSettings, repository: AppSettingsRepository, colors: UiColors) {
     val scope = rememberCoroutineScope()
-    PageScaffold("记录与隐私", "历史记录保留策略与本机显示方式；隐私模式只影响显示，不改动已存内容。", modifier, colors, scope = SettingScope.GLOBAL) {
+    PageScaffold("记录与隐私", "历史记录保留策略与本机显示方式；隐私模式只影响显示，不改动已存内容。", modifier, colors) {
         SectionCard("历史记录保留", "到期的记录会被自动清理；「仅状态」只保留发送状态、不保存正文。", Icons.Outlined.History, colors) {
             Text("当前：${retentionLabel(settings.historyRetention)}", color = colors.ink, fontWeight = FontWeight.Bold)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1346,10 +1389,7 @@ private fun AdvancedSettingsScreen(
         SectionCard("风险提示", "错误配置可能导致消息漏发、重复发送或模板显示异常。", Icons.Outlined.Tune, colors) {
             Text("只修改你明确理解的项目。", color = colors.muted)
         }
-        SectionCard("多渠道同时发送", "开启后同一条消息会同时发送到全部启用渠道。", Icons.Outlined.Notifications, colors, scope = SettingScope.GLOBAL) {
-            SettingSwitchRow("启用多渠道同时发送", settings.multiChannelSend, { scope.launch { repository.setMultiChannelSend(it) } }, colors)
-        }
-        SectionCard("失败自动重试", "网络错误或 429、5xx 错误会按 WorkManager 策略重试。", Icons.Outlined.History, colors, scope = SettingScope.GLOBAL) {
+        SectionCard("失败自动重试", "网络错误或 429、5xx 错误会按 WorkManager 策略重试。", Icons.Outlined.History, colors) {
             SettingSwitchRow("启用失败重试", settings.retryEnabled, { scope.launch { repository.setRetryPolicy(it, retryCount.toIntOrNull() ?: settings.maxRetryCount) } }, colors)
             OutlinedTextField(retryCount, { retryCount = it.filter(Char::isDigit).take(2) }, label = { Text("最大重试次数") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             PrimaryAction("保存重试策略", colors) { scope.launch { repository.setRetryPolicy(settings.retryEnabled, retryCount.toIntOrNull() ?: 3) } }
@@ -1682,25 +1722,47 @@ private fun ManualChapter(title: String, text: String, colors: UiColors) {
 }
 
 @Composable
-internal fun PageScaffold(title: String, subtitle: String? = null, modifier: Modifier = Modifier, colors: UiColors, scope: SettingScope? = null, content: @Composable ColumnScope.() -> Unit) {
+internal fun PageScaffold(
+    title: String,
+    subtitle: String? = null,
+    modifier: Modifier = Modifier,
+    colors: UiColors,
+    actions: (@Composable RowScope.() -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
     val onBack = LocalPageBack.current
-    Column(modifier.fillMaxSize().verticalScroll(rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) }).padding(18.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (onBack != null) {
-                PageBackButton(colors, onBack)
-                Spacer(Modifier.width(14.dp))
-            }
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                Text(title, fontSize = 28.sp, fontWeight = FontWeight.Black, color = colors.ink, letterSpacing = (-0.5).sp)
-                if (scope != null) {
-                    Spacer(Modifier.width(8.dp))
-                    ScopeBadge(scope, colors)
+    Column(modifier.fillMaxSize()) {
+        // 标准标题栏：固定不随内容滚动。子页带返回按钮；右侧动作槽承载「＋ 添加」等页面级主动作。
+        Surface(color = colors.page) {
+            Row(
+                Modifier.fillMaxWidth().padding(start = if (onBack != null) 10.dp else 18.dp, end = 18.dp, top = 10.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (onBack != null) {
+                    PageBackButton(colors, onBack)
+                    Spacer(Modifier.width(12.dp))
+                }
+                Text(title, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = colors.ink, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (actions != null) {
+                    Spacer(Modifier.width(12.dp))
+                    actions()
                 }
             }
         }
-        if (!subtitle.isNullOrBlank()) Text(subtitle, color = colors.muted, lineHeight = 19.sp)
-        Spacer(Modifier.height(16.dp))
-        content()
+        Column(
+            Modifier
+                .fillMaxSize()
+                .weight(1f)
+                .verticalScroll(rememberSaveable(saver = ScrollState.Saver) { ScrollState(0) })
+                .padding(horizontal = 18.dp)
+                .padding(bottom = 18.dp)
+        ) {
+            if (!subtitle.isNullOrBlank()) {
+                Text(subtitle, color = colors.muted, lineHeight = 19.sp, modifier = Modifier.padding(top = 4.dp))
+                Spacer(Modifier.height(12.dp))
+            }
+            content()
+        }
     }
 }
 
@@ -1726,7 +1788,7 @@ private fun PageBackButton(colors: UiColors, onClick: () -> Unit) {
 }
 
 @Composable
-internal fun SectionCard(title: String, subtitle: String? = null, icon: ImageVector = Icons.Outlined.CheckCircle, colors: UiColors, scope: SettingScope? = null, content: @Composable ColumnScope.() -> Unit) {
+internal fun SectionCard(title: String, subtitle: String? = null, icon: ImageVector = Icons.Outlined.CheckCircle, colors: UiColors, content: @Composable ColumnScope.() -> Unit) {
     Surface(shape = RoundedCornerShape(16.dp), color = colors.card, shadowElevation = 2.dp, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -1736,25 +1798,9 @@ internal fun SectionCard(title: String, subtitle: String? = null, icon: ImageVec
                     Text(title, color = colors.ink, fontWeight = FontWeight.Bold, fontSize = 18.sp)
                     if (!subtitle.isNullOrBlank()) Text(subtitle, color = colors.muted, lineHeight = 19.sp)
                 }
-                if (scope != null) {
-                    Spacer(Modifier.width(8.dp))
-                    ScopeBadge(scope, colors)
-                }
             }
             Spacer(Modifier.height(12.dp))
             content()
-        }
-    }
-}
-
-@Composable
-private fun FeatureCard(title: String, status: String, icon: ImageVector, modifier: Modifier, onClick: () -> Unit, colors: UiColors) {
-    Surface(shape = RoundedCornerShape(12.dp), color = colors.card, shadowElevation = 1.dp, modifier = modifier.pressScale(onClick)) {
-        Column(Modifier.padding(14.dp)) {
-            Icon(icon, contentDescription = null, tint = Indigo)
-            Spacer(Modifier.height(8.dp))
-            Text(title, color = colors.ink, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(status, color = colors.muted, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -1768,7 +1814,7 @@ private fun SetupStep(label: String, done: Boolean, onClick: () -> Unit, colors:
 }
 
 @Composable
-private fun SettingNavRow(title: String, subtitle: String, icon: ImageVector, onClick: () -> Unit, colors: UiColors, scope: SettingScope? = null, trailing: (@Composable () -> Unit)? = null) {
+private fun SettingNavRow(title: String, subtitle: String, icon: ImageVector, onClick: () -> Unit, colors: UiColors, trailing: (@Composable () -> Unit)? = null) {
     OutlinedCard(
         modifier = Modifier.fillMaxWidth().pressScale(onClick).padding(vertical = 5.dp),
         colors = CardDefaults.outlinedCardColors(containerColor = colors.card),
@@ -1778,13 +1824,7 @@ private fun SettingNavRow(title: String, subtitle: String, icon: ImageVector, on
             Icon(icon, contentDescription = null, tint = Indigo)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(title, color = colors.ink, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                    if (scope != null) {
-                        Spacer(Modifier.width(8.dp))
-                        ScopeBadge(scope, colors)
-                    }
-                }
+                Text(title, color = colors.ink, fontWeight = FontWeight.Bold)
                 Text(subtitle, color = colors.muted, lineHeight = 18.sp)
             }
             if (trailing != null) {
@@ -1874,7 +1914,7 @@ private fun channelsFromInputs(dingtalk: String, feishu: String, bark: String, d
 private fun selectedChannelConfig(type: String, dingtalk: String, feishu: String, bark: String, dingSecret: String = "", feiSecret: String = "") =
     ChannelSelection.singleEnabled(channelsFromInputs(dingtalk, feishu, bark, dingSecret, feiSecret).filter { it.type == type })
 
-private fun storedChannels(context: Context): List<ChannelConfig> =
+internal fun storedChannels(context: Context): List<ChannelConfig> =
     SecureStore(context).get("channels")?.let { runCatching { ChannelSender.parse(it) }.getOrDefault(emptyList()) }.orEmpty()
 
 private suspend fun reconcileUpgradeState(context: Context, repository: AppSettingsRepository, dao: RelayDao) {

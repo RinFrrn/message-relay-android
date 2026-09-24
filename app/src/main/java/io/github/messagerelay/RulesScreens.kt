@@ -50,12 +50,22 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 
 @Composable
-internal fun AppRuleSettingsScreen(modifier: Modifier, appName: String, packageName: String, settings: AppSettings, colors: UiColors, onOpenTemplateLibrary: (String?) -> Unit) {
+internal fun AppRuleSettingsScreen(modifier: Modifier, appName: String, packageName: String, settings: AppSettings, colors: UiColors, onDeleted: () -> Unit) {
     val context = LocalContext.current
     val dao = remember { RelayDatabase.get(context).relayDao() }
     val scope = rememberCoroutineScope()
     val rules by dao.rulesFlow().collectAsState(initial = emptyList())
     val existing = rules.firstOrNull { it.packageName == packageName }
+    // 「发送渠道」卡（009 A2）：规则页必须能回答「这个 App 的消息去哪」。
+    // 渠道存在 SecureStore；刷新靠本页 state，弹窗保存后直接更新。
+    var channels by remember { mutableStateOf(ChannelSelection.normalized(storedChannels(context))) }
+    var showTargetsDialog by remember { mutableStateOf(false) }
+    val defaultTarget = if (settings.multiChannelSend) {
+        "全部渠道（${channels.size} 个）"
+    } else {
+        "主渠道「${channels.firstOrNull { it.id == settings.primaryChannelId }?.name ?: channels.firstOrNull()?.name ?: "未配置"}」"
+    }
+    val boundBarks = channels.filter { it.type == "bark" && packageName in it.boundPackages() }
     val recommendedTemplate = TemplateCatalog.recommend(appName, packageName).takeIf { it != TemplateCatalog.GENERAL_ID } ?: settings.selectedTemplatePreset
     var enabled by rememberSaveable(existing?.enabled, packageName) { mutableStateOf(existing?.enabled ?: true) }
     var screenOffOnly by rememberSaveable(existing?.screenOffOnly, packageName) { mutableStateOf(existing?.screenOffOnly ?: false) }
@@ -66,17 +76,35 @@ internal fun AppRuleSettingsScreen(modifier: Modifier, appName: String, packageN
         mutableStateOf(CallEventTypes.parse(existing?.enabledCallEventTypes ?: CallEventTypes.serialize(CallEventTypes.default)))
     }
     var status by remember { mutableStateOf("") }
+    var confirmDelete by remember { mutableStateOf(false) }
     val isPhone = TemplateCatalog.recommend(appName, packageName) == "phone" || templateId == "phone"
 
-    PageScaffold(appName, "以下设置仅对「$appName」生效；全局默认模板在「设置 → 消息模板」里改。", modifier, colors, scope = SettingScope.PER_APP) {
+    PageScaffold(appName, "以下设置仅对「$appName」生效；全局默认模板在「设置 → 消息模板」里改。", modifier, colors) {
         SectionCard("转发设置", packageName, Icons.Outlined.Tune, colors) {
             SettingSwitchRow("转发这个 App 的通知", enabled, { enabled = it }, colors)
             SettingSwitchRow("仅息屏时推送", screenOffOnly, { screenOffOnly = it }, colors)
             if (screenOffOnly) StatusBadge("仅息屏时推送已开启", Indigo, colors)
         }
         Spacer(Modifier.height(12.dp))
-        SectionCard("消息模板", "为这个 App 选择模板；模板内容是全局的，在「设置 → 消息模板 → 自定义模板库」维护。", Icons.Outlined.CheckCircle, colors) {
-            TemplateSelector(templateId, { templateId = it }, colors, onAddTemplate = { onOpenTemplateLibrary(null) }, onEditTemplate = { onOpenTemplateLibrary(it) })
+        SectionCard(
+            "发送渠道",
+            "这个 App 的消息发到哪里；管理所有渠道在「设置 → 推送渠道」。",
+            Icons.Outlined.Notifications, colors
+        ) {
+            Text("默认：$defaultTarget", color = colors.ink, fontWeight = FontWeight.Medium)
+            if (boundBarks.isNotEmpty()) {
+                Text(
+                    "指定 Bark：${boundBarks.joinToString("、") { it.name }}（替代默认目标里的 Bark）",
+                    color = Indigo, fontSize = 13.sp, lineHeight = 18.sp
+                )
+            }
+            TextButton(onClick = { showTargetsDialog = true }, modifier = Modifier.fillMaxWidth()) {
+                Text(if (boundBarks.isEmpty()) "为这个 App 指定 Bark（可选）" else "管理指定 Bark")
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        SectionCard("消息模板", "为这个 App 选择模板；模板内容是全局的，在「设置 → 消息模板」维护，此处添加/编辑用弹窗完成，不离开本页。", Icons.Outlined.CheckCircle, colors) {
+            TemplateSelector(templateId, { templateId = it }, colors)
         }
         Spacer(Modifier.height(12.dp))
         SectionCard("关键词规则", "包含为空表示不过滤；排除命中即记为已过滤，记录里会写明命中的具体关键词。", Icons.Outlined.List, colors) {
@@ -111,20 +139,119 @@ internal fun AppRuleSettingsScreen(modifier: Modifier, appName: String, packageN
             }
         }
         if (status.isNotBlank()) StatusBadge(status, if ("已保存" in status) Success else Danger, colors)
+        Spacer(Modifier.height(12.dp))
+        // 删除规则收敛到详情页（列表行不再放删除，避免在列表里误触）。
+        // 删除时顺带把这个 App 从所有 Bark 渠道的绑定里清掉，避免残留死绑定。
+        OutlinedButton(onClick = { confirmDelete = true }, modifier = Modifier.fillMaxWidth()) {
+            Text("删除这个 App 的转发规则", color = Danger)
+        }
+    }
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("删除「$appName」的转发规则？") },
+            text = { Text("关键词、模板等配置会一并删除；历史记录保留。重新添加应用可随时重建规则。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDelete = false
+                    scope.launch {
+                        dao.deleteRule(packageName)
+                        val cleaned = channels.map { ch ->
+                            if (packageName in ch.boundPackages()) {
+                                ch.copy(boundAppPackages = ch.boundPackages().filter { it != packageName }.joinToString("\n"))
+                            } else ch
+                        }
+                        SecureStore(context).put("channels", ChannelSender.serialize(cleaned))
+                        onDeleted()
+                    }
+                }) { Text("删除") }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("取消") } }
+        )
+    }
+    if (showTargetsDialog) {
+        AppBarkTargetsDialog(
+            appName = appName,
+            packageName = packageName,
+            channels = channels,
+            colors = colors,
+            onDismiss = { showTargetsDialog = false },
+            onSave = { updated ->
+                SecureStore(context).put("channels", ChannelSender.serialize(updated))
+                channels = updated
+                showTargetsDialog = false
+            }
+        )
     }
 }
 
+/**
+ * 按 App 视角的指定 Bark 弹窗：勾选这个 App 要发到哪些 Bark（009 A2）。
+ * 与渠道页的 BarkBindingDialog 是同一份绑定数据的两个视角：绑定存于渠道的 boundAppPackages，
+ * 此处按 App 反选渠道。绑定语义与 PerAppRouteResolver 一致：勾选后这个 App 不再发主渠道里的其他 Bark。
+ */
 @Composable
-private fun TemplateSelector(selected: String, onSelect: (String) -> Unit, colors: UiColors, onAddTemplate: () -> Unit, onEditTemplate: (String) -> Unit) {
+private fun AppBarkTargetsDialog(
+    appName: String,
+    packageName: String,
+    channels: List<ChannelConfig>,
+    colors: UiColors,
+    onDismiss: () -> Unit,
+    onSave: (List<ChannelConfig>) -> Unit
+) {
+    val barks = channels.filter { it.type == "bark" }
+    var selected by rememberSaveable(packageName, channels, stateSaver = PackageSetSaver) {
+        mutableStateOf(barks.filter { packageName in it.boundPackages() }.map { it.id }.toSet())
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("「$appName」指定 Bark") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("勾选后，这个 App 只发到选中的 Bark（替代默认发送目标里的 Bark）；全部不勾选则走默认发送目标。", color = colors.muted, fontSize = 13.sp, lineHeight = 18.sp)
+                if (barks.isEmpty()) {
+                    EmptyText("还没有 Bark 渠道；在「设置 → 推送渠道」里添加。", colors)
+                } else {
+                    barks.forEach { bark ->
+                        Row(Modifier.fillMaxWidth().heightIn(min = 40.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(bark.name, color = colors.ink, modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
+                            Checkbox(checked = bark.id in selected, onCheckedChange = { checked ->
+                                selected = if (checked) selected + bark.id else selected - bark.id
+                            })
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onSave(channels.map { channel ->
+                    if (channel.type != "bark") channel
+                    else {
+                        val rest = channel.boundPackages() - packageName
+                        val next = if (channel.id in selected) rest + packageName else rest
+                        channel.copy(boundAppPackages = next.sorted().joinToString("\n"))
+                    }
+                })
+            }) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
+}
+
+@Composable
+private fun TemplateSelector(selected: String, onSelect: (String) -> Unit, colors: UiColors) {
     val context = LocalContext.current
     val dao = remember { RelayDatabase.get(context).relayDao() }
     val scope = rememberCoroutineScope()
     val templates by dao.templatesFlow().collectAsState(initial = emptyList())
     val rules by dao.rulesFlow().collectAsState(initial = emptyList())
     var deleting by remember { mutableStateOf<TemplateDefinition?>(null) }
+    // 添加 / 编辑自定义模板一律就地弹窗（与渠道页同一模式），不再跳到模板库页。
+    var adding by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf<TemplateEntity?>(null) }
     val canonicalSelected = TemplateCatalog.canonical(selected)
     Column {
-        Text("这里的选择只影响这个 App；模板内容是全局的，在「设置 → 消息模板 → 自定义模板库」里维护。", color = colors.muted, fontSize = 13.sp)
         TemplateCatalog.allTemplates(templates).forEach { template ->
             if (template.builtIn) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -138,13 +265,27 @@ private fun TemplateSelector(selected: String, onSelect: (String) -> Unit, color
                         Text("自定义 · 已被 ${rules.count { it.templateId == template.id }} 条规则使用", color = colors.muted, fontSize = 12.sp)
                     }
                     RadioButton(selected == template.id, onClick = { onSelect(template.id) })
-                    TextButton(onClick = { onEditTemplate(template.id) }) { Text("编辑") }
+                    TextButton(onClick = {
+                        editing = TemplateCatalog.customTemplates(templates).firstOrNull { it.id == template.id }
+                    }) { Text("编辑") }
                     TextButton(onClick = { deleting = template }) { Text("删除") }
                 }
             }
         }
         Spacer(Modifier.height(8.dp))
-        TextButton(onClick = onAddTemplate, modifier = Modifier.fillMaxWidth()) { Text("＋ 添加自定义模板") }
+        TextButton(onClick = { adding = true }, modifier = Modifier.fillMaxWidth()) { Text("＋ 添加自定义模板") }
+    }
+    if (adding) {
+        TemplateEditorDialog(initial = null, colors = colors, onDismiss = { adding = false }, onSave = { name, title, body ->
+            scope.launch { dao.saveTemplate(TemplateEntity("custom_${System.currentTimeMillis()}", name, title, body)) }
+            adding = false
+        })
+    }
+    editing?.let { target ->
+        TemplateEditorDialog(initial = target, colors = colors, onDismiss = { editing = null }, onSave = { name, title, body ->
+            scope.launch { dao.saveTemplate(target.copy(name = name, title = title, body = body)) }
+            editing = null
+        })
     }
     deleting?.let { template ->
         AlertDialog(
@@ -195,8 +336,7 @@ internal fun SimpleAppRow(
     hitCount: Int,
     colors: UiColors,
     onOpenSettings: (Pair<String, String>) -> Unit,
-    onRuleChange: (RuleEntity) -> Unit,
-    onDelete: ((RuleEntity) -> Unit)? = null
+    onRuleChange: (RuleEntity) -> Unit
 ) {
     val templateId = TemplateCatalog.recommend(appName, packageName).takeIf { it != TemplateCatalog.GENERAL_ID } ?: templatePreset
     val enabled = rule?.enabled == true
@@ -214,10 +354,7 @@ internal fun SimpleAppRow(
         Switch(enabled, modifier = Modifier.semantics { contentDescription = "${appName}转发开关" }, onCheckedChange = { checked ->
             onRuleChange((rule ?: RuleEntity(packageName, appName, defaultIncludesForTemplate(templateId), templateId = templateId)).copy(enabled = checked))
         })
-        // 删除入口由「批量管理规则」页收敛而来：仅对已有规则显示，确认弹窗在调用方处理。
-        if (onDelete != null && rule != null) {
-            TextButton(onClick = { onDelete(rule) }) { Text("删除") }
-        }
+        // 删除规则在各 App 的规则编辑页底部（带确认弹窗），列表行不放删除。
         // 右箭头指示：点整行进入该 App 的规则编辑页（二级页面），与系统设置的导航暗示一致。
         Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = "打开${appName}的规则设置", tint = colors.muted)
     }
